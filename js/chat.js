@@ -12,6 +12,8 @@ class ChatApp {
     this.lastSendTime = 0;
     this.debounceDelay = 500;
     this.messageSequence = 0;
+    this.roundSaveFailed = false;
+    this.roundNetworkFailed = false;
     this.init();
   }
 
@@ -134,8 +136,12 @@ class ChatApp {
     this.addQuickButtons(scene.tabs);
 
     for (const message of this.sessions[this.currentScene]) {
-      if (message.who === 'user') this.addUserMessage(message.text, { save: false, message });
-      if (message.who === 'ai') this.addAIMessage({ parts: message.parts }, { save: false, message });
+      if (message.who === 'user') {
+        this.addUserMessage(message.text, { save: false, message, scene: this.currentScene });
+      }
+      if (message.who === 'ai') {
+        this.addAIMessage({ parts: message.parts }, { save: false, message, scene: this.currentScene });
+      }
     }
     this.scrollBottom();
   }
@@ -187,6 +193,7 @@ class ChatApp {
   }
 
   addUserMessage(text, options = {}) {
+    const targetScene = Number.isInteger(options.scene) ? options.scene : this.currentScene;
     const message = options.message || {
       who: 'user',
       id: this.nextMessageId('user'),
@@ -194,27 +201,30 @@ class ChatApp {
       createdAt: Date.now(),
     };
 
-    const bubble = document.createElement('div');
-    bubble.className = 'bubble user';
-    bubble.textContent = text;
-    const stack = document.createElement('div');
-    stack.className = 'stack right';
-    stack.append(bubble, this.addTimestamp(message.createdAt));
-    const row = document.createElement('div');
-    row.className = 'row user';
-    row.dataset.messageId = message.id;
-    row.appendChild(stack);
-    this.chatScreen.appendChild(row);
+    if (targetScene === this.currentScene) {
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble user';
+      bubble.textContent = message.text;
+      const stack = document.createElement('div');
+      stack.className = 'stack right';
+      stack.append(bubble, this.addTimestamp(message.createdAt));
+      const row = document.createElement('div');
+      row.className = 'row user';
+      row.dataset.messageId = message.id;
+      row.appendChild(stack);
+      this.chatScreen.appendChild(row);
+    }
 
     if (options.save !== false) {
-      this.sessions[this.currentScene].push(message);
-      this.persistCurrentSession();
+      this.sessions[targetScene].push(message);
+      this.notePersistenceResult(this.persistCurrentSession(targetScene));
     }
-    this.scrollBottom();
+    if (targetScene === this.currentScene) this.scrollBottom();
     return message;
   }
 
   addAIMessage(reply, options = {}) {
+    const targetScene = Number.isInteger(options.scene) ? options.scene : this.currentScene;
     const message = options.message || {
       who: 'ai',
       id: this.nextMessageId('ai'),
@@ -225,50 +235,52 @@ class ChatApp {
       followupDepth: options.followupDepth || 0,
     };
 
-    const stack = document.createElement('div');
-    stack.className = 'stack left';
-    for (const part of reply.parts) {
-      if (part.type === 'text') {
-        const bubble = document.createElement('div');
-        bubble.className = `bubble ai${part.coral ? ' coral' : ''}`;
-        bubble.textContent = part.text;
-        stack.appendChild(bubble);
-      } else if (part.type === 'source') {
-        const source = document.createElement('div');
-        source.className = 'source';
-        source.textContent = part.text;
-        stack.appendChild(source);
-      } else if (part.type === 'card') {
-        const card = document.createElement('div');
-        card.className = 'ai-card';
-        const title = document.createElement('div');
-        title.className = 'c-title';
-        title.textContent = part.title;
-        const body = document.createElement('div');
-        body.className = 'c-body';
-        body.textContent = part.body;
-        card.append(title, body);
-        stack.appendChild(card);
+    if (targetScene === this.currentScene) {
+      const stack = document.createElement('div');
+      stack.className = 'stack left';
+      for (const part of reply.parts) {
+        if (part.type === 'text') {
+          const bubble = document.createElement('div');
+          bubble.className = `bubble ai${part.coral ? ' coral' : ''}`;
+          bubble.textContent = part.text;
+          stack.appendChild(bubble);
+        } else if (part.type === 'source') {
+          const source = document.createElement('div');
+          source.className = 'source';
+          source.textContent = part.text;
+          stack.appendChild(source);
+        } else if (part.type === 'card') {
+          const card = document.createElement('div');
+          card.className = 'ai-card';
+          const title = document.createElement('div');
+          title.className = 'c-title';
+          title.textContent = part.title;
+          const body = document.createElement('div');
+          body.className = 'c-body';
+          body.textContent = part.body;
+          card.append(title, body);
+          stack.appendChild(card);
+        }
       }
-    }
-    stack.appendChild(this.addTimestamp(message.createdAt));
-    if (message.feedbackEligible) this.addFeedbackActions(stack, message);
+      stack.appendChild(this.addTimestamp(message.createdAt));
+      if (message.feedbackEligible) this.addFeedbackActions(stack, message, targetScene);
 
-    const row = document.createElement('div');
-    row.className = 'row ai';
-    row.dataset.messageId = message.id;
-    row.append(this.createAvatar(), stack);
-    this.chatScreen.appendChild(row);
+      const row = document.createElement('div');
+      row.className = 'row ai';
+      row.dataset.messageId = message.id;
+      row.append(this.createAvatar(), stack);
+      this.chatScreen.appendChild(row);
+    }
 
     if (options.save !== false) {
-      this.sessions[this.currentScene].push(message);
-      this.persistCurrentSession();
+      this.sessions[targetScene].push(message);
+      this.notePersistenceResult(this.persistCurrentSession(targetScene));
     }
-    this.scrollBottom();
+    if (targetScene === this.currentScene) this.scrollBottom();
     return message;
   }
 
-  addFeedbackActions(stack, message) {
+  addFeedbackActions(stack, message, targetScene) {
     const actions = document.createElement('div');
     actions.className = 'feedback-actions';
 
@@ -292,7 +304,8 @@ class ChatApp {
     yes.textContent = '已解决';
     yes.addEventListener('click', () => {
       message.feedbackStatus = 'resolved';
-      this.persistCurrentSession();
+      this.syncFeedbackStatus(targetScene, message);
+      if (!this.persistCurrentSession(targetScene)) this.toast('对话未能保存');
       this.replaceFeedbackState(actions, '已标记为解决');
     });
     const no = document.createElement('button');
@@ -300,13 +313,23 @@ class ChatApp {
     no.textContent = '未解决';
     no.addEventListener('click', () => {
       message.feedbackStatus = 'unresolved';
-      this.persistCurrentSession();
+      this.syncFeedbackStatus(targetScene, message);
       this.replaceFeedbackState(actions, message.followupDepth >= 1 ? '转入人工协助' : '正在补充回答…');
-      if (message.followupDepth >= 1) this.showHumanHandoff(message);
-      else this.requestSecondAnswer(message);
+      if (message.followupDepth >= 1) {
+        if (!this.persistCurrentSession(targetScene)) this.toast('对话未能保存');
+        this.showHumanHandoff(message);
+      } else {
+        this.requestSecondAnswer(message, targetScene);
+      }
     });
     actions.append(label, yes, no);
     stack.appendChild(actions);
+  }
+
+  syncFeedbackStatus(targetScene, message) {
+    const storedMessage = this.sessions[targetScene]
+      .find(candidate => candidate.id === message.id);
+    if (storedMessage) storedMessage.feedbackStatus = message.feedbackStatus;
   }
 
   replaceFeedbackState(actions, text) {
@@ -316,13 +339,17 @@ class ChatApp {
     actions.replaceChildren(state);
   }
 
-  requestSecondAnswer(message) {
+  requestSecondAnswer(message, requestScene = this.currentScene) {
     if (this.isProcessing) return;
     const prompt = '这个回答没有解决我的问题。请回到我原来的问题，补充明确的制度依据、适用条件、具体步骤和可行的替代方案；不确定的信息请直接说明。';
     this.beginProcessing();
-    this.addUserMessage(prompt);
-    this.showTyping();
-    this.fetchAIReply(prompt, { followupDepth: (message.followupDepth || 0) + 1 });
+    this.notePersistenceResult(this.persistCurrentSession(requestScene));
+    this.addUserMessage(prompt, { scene: requestScene });
+    if (requestScene === this.currentScene) this.showTyping();
+    this.fetchAIReply(prompt, {
+      followupDepth: (message.followupDepth || 0) + 1,
+      scene: requestScene,
+    });
   }
 
   showHumanHandoff() {
@@ -374,34 +401,39 @@ class ChatApp {
 
     const text = this.msgInput.value.trim();
     if (!text) return;
+    const requestScene = this.currentScene;
     this.lastSendTime = now;
     this.beginProcessing();
-    this.addUserMessage(text);
+    this.addUserMessage(text, { scene: requestScene });
     this.msgInput.value = '';
     this.updateComposer();
 
     if (isCrisis(text)) {
-      this.addCrisisSupportMessage();
+      this.addCrisisSupportMessage(requestScene);
       this.showCrisisModal();
+      this.finishProcessingRound();
       this.resetProcessingState();
       return;
     }
 
     this.showTyping();
-    this.fetchAIReply(text);
+    this.fetchAIReply(text, { scene: requestScene });
   }
 
   beginProcessing() {
     this.isProcessing = true;
+    this.roundSaveFailed = false;
+    this.roundNetworkFailed = false;
     this.sendBtn.disabled = true;
     this.msgInput.disabled = true;
   }
 
   async fetchAIReply(text, options = {}) {
+    const requestScene = Number.isInteger(options.scene) ? options.scene : this.currentScene;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 75000);
     try {
-      const history = this.sessions[this.currentScene]
+      const history = this.sessions[requestScene]
         .filter(message => message.who === 'user' || message.who === 'ai')
         .slice(-20)
         .map(message => ({
@@ -414,9 +446,9 @@ class ChatApp {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          scene: this.currentScene,
+          scene: requestScene,
           history,
-          profile: this.currentScene === 1 ? this.profile : undefined,
+          profile: requestScene === 1 ? this.profile : undefined,
         }),
         signal: controller.signal,
       });
@@ -426,15 +458,20 @@ class ChatApp {
       this.removeTyping();
       this.addAIMessage(
         { parts: [{ type: 'text', text: data.reply }] },
-        { followupDepth: options.followupDepth || 0 }
+        { followupDepth: options.followupDepth || 0, scene: requestScene }
       );
     } catch (error) {
       console.error('获取AI回复失败:', error.name);
       this.removeTyping();
+      this.roundNetworkFailed = true;
       this.toast(error.name === 'AbortError' ? '回答超时，请稍后重试' : '获取回复失败，请稍后重试');
-      this.addAIMessage(getAIReply(this.currentScene, text), { feedbackEligible: false });
+      this.addAIMessage(getAIReply(requestScene, text), {
+        feedbackEligible: false,
+        scene: requestScene,
+      });
     } finally {
       clearTimeout(timeout);
+      this.finishProcessingRound();
       this.resetProcessingState();
     }
   }
@@ -460,6 +497,17 @@ class ChatApp {
     this.typingEl = null;
   }
 
+  notePersistenceResult(result) {
+    this.roundSaveFailed = result === false;
+  }
+
+  finishProcessingRound() {
+    if (this.roundSaveFailed && !this.roundNetworkFailed) {
+      this.toast('对话未能保存');
+    }
+    this.roundSaveFailed = false;
+  }
+
   resetProcessingState() {
     this.isProcessing = false;
     this.sendBtn.disabled = false;
@@ -475,12 +523,12 @@ class ChatApp {
     this.sendBtn.classList.toggle('ready', hasText && !this.isProcessing);
   }
 
-  addCrisisSupportMessage() {
+  addCrisisSupportMessage(requestScene = this.currentScene) {
     this.addAIMessage({ parts: [{
       type: 'text',
       coral: true,
       text: '我注意到你提到了自杀、自伤或活不下去，我很担心你现在的安全。请先不要独处，立即远离可能伤害自己的物品，并联系一位你信任的人陪着你。\n\n如果危险正在发生、你已经采取行动或已经受伤，请立即拨打110或120。你也可以拨打全国心理援助热线12356，或安徽精神卫生中心24小时心理援助热线0551-63666903。\n\n如果方便，请只告诉我：你现在是“安全”，还是“有危险”？'
-    }] }, { feedbackEligible: false });
+    }] }, { feedbackEligible: false, scene: requestScene });
   }
 
   showCrisisModal() {
@@ -527,6 +575,10 @@ class ChatApp {
 
   handleProfileSubmit(event) {
     event.preventDefault();
+    if (this.isProcessing) {
+      this.toast('请等待当前回答完成后再保存资料');
+      return;
+    }
     const nextProfile = {
       grade: this.gradeSelect.value,
       major: this.majorInput.value.trim().slice(0, 40),
@@ -538,8 +590,9 @@ class ChatApp {
       return;
     }
 
-    this.profile = this.localStore.load().profile;
+    this.profile = nextProfile;
     this.renderProfileForm();
+    if (this.currentScene === 1) this.renderCurrentSession();
     this.toast('本地资料已保存');
   }
 
@@ -554,18 +607,13 @@ class ChatApp {
     this.careerTrack.replaceChildren(heading, description);
   }
 
-  persistCurrentSession() {
-    if (this.currentScene === 2) return;
-    const saved = this.localStore.saveSession(this.currentScene, this.sessions[this.currentScene]);
-    if (!saved) {
-      this.toast('本地历史保存失败，当前对话仍可继续');
-      return false;
-    }
+  persistCurrentSession(targetScene = this.currentScene) {
+    if (targetScene === 2) return true;
+    const normalized = this.localStore.normalizeSession(this.sessions[targetScene]);
+    const saved = this.localStore.saveSession(targetScene, normalized);
+    if (!saved) return false;
 
-    const session = this.sessions[this.currentScene];
-    const normalized = this.localStore.load().sessions[this.currentScene];
-    const trimmedCount = Math.max(0, session.length - normalized.length);
-    if (trimmedCount > 0) session.splice(0, trimmedCount);
+    this.sessions[targetScene] = normalized;
     return true;
   }
 
@@ -575,13 +623,14 @@ class ChatApp {
 
     sceneIndexes.forEach(sceneIndex => {
       const session = this.sessions[sceneIndex];
+      const sceneName = SCENES[sceneIndex].name;
       const item = document.createElement('article');
       item.className = 'history-item';
 
       const summary = document.createElement('div');
       summary.className = 'history-summary';
       const title = document.createElement('strong');
-      title.textContent = SCENES[sceneIndex].name;
+      title.textContent = sceneName;
       const count = document.createElement('span');
       count.textContent = `${session.length}条消息`;
       const recent = [...session].reverse().find(message => message.who === 'user');
@@ -596,12 +645,14 @@ class ChatApp {
       const restore = document.createElement('button');
       restore.type = 'button';
       restore.textContent = '恢复对话';
+      restore.setAttribute('aria-label', `恢复${sceneName}对话`);
       restore.disabled = session.length === 0;
       restore.addEventListener('click', () => this.restoreHistory(sceneIndex));
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'history-delete';
       remove.textContent = '删除';
+      remove.setAttribute('aria-label', `删除${sceneName}本地历史`);
       remove.disabled = session.length === 0;
       remove.addEventListener('click', () => this.deleteHistory(sceneIndex));
       actions.append(restore, remove);
@@ -617,12 +668,20 @@ class ChatApp {
   }
 
   restoreHistory(sceneIndex) {
+    if (this.isProcessing) {
+      this.toast('请等待当前回答完成后再恢复对话');
+      return;
+    }
     this.currentScene = sceneIndex;
     this.renderCurrentSession();
     this.navigateTo('chat');
   }
 
   deleteHistory(sceneIndex) {
+    if (this.isProcessing) {
+      this.toast('请等待当前回答完成后再删除历史');
+      return;
+    }
     if (!window.confirm('只删除当前设备上的该模块历史，是否继续？')) return;
     if (!this.localStore.clearSession(sceneIndex)) {
       this.toast('本地历史删除失败');
@@ -633,10 +692,16 @@ class ChatApp {
     if (this.currentScene === sceneIndex) this.renderCurrentSession();
     this.updateProfileStats();
     this.renderHistoryList();
+    this.historyList.tabIndex = -1;
+    this.historyList.focus();
     this.toast('该模块本地历史已删除');
   }
 
   clearAllHistory() {
+    if (this.isProcessing) {
+      this.toast('请等待当前回答完成后再清空历史');
+      return;
+    }
     if (!window.confirm('将清除当前设备上的校园、成长和事务历史，是否继续？')) return;
     if (!this.localStore.clearAllSessions()) {
       this.toast('本地历史清空失败');
@@ -649,6 +714,8 @@ class ChatApp {
     if (this.currentScene !== 2) this.renderCurrentSession();
     this.updateProfileStats();
     this.renderHistoryList();
+    this.historyList.tabIndex = -1;
+    this.historyList.focus();
     this.toast('本地历史已清空');
   }
 

@@ -140,6 +140,10 @@
   }
 
   function createLocalStateStore(storage) {
+    function normalizeSession(messages) {
+      return cleanMessages(messages);
+    }
+
     function readState() {
       let raw;
       try {
@@ -188,7 +192,7 @@
       const result = readState();
       if (!result.canWrite) return false;
       const state = result.state;
-      state.sessions[scene] = cleanMessages(messages);
+      state.sessions[scene] = normalizeSession(messages);
       return write(state);
     }
 
@@ -209,7 +213,7 @@
       return write(state);
     }
 
-    return { load, saveProfile, saveSession, clearSession, clearAllSessions };
+    return { load, normalizeSession, saveProfile, saveSession, clearSession, clearAllSessions };
   }
 
   const publicApi = { defaultState, createLocalStateStore };

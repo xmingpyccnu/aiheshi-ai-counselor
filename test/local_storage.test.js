@@ -170,6 +170,19 @@ test('45条合法消息只保留最后40条', () => {
   assert.equal(savedMessages.at(-1).text, '问题44');
 });
 
+test('normalizeSession为程序内存提供与持久化一致的规范化结果', () => {
+  const store = createLocalStateStore(new MemoryStorage());
+  const messages = Array.from({ length: 41 }, (_, index) => userMessage(index));
+  messages[40].text = `  ${'长'.repeat(9_000)}  `;
+
+  const normalized = store.normalizeSession(messages);
+
+  assert.equal(normalized.length, 40);
+  assert.equal(normalized[0].text, '问题1');
+  assert.equal(normalized.at(-1).text, '长'.repeat(8_000));
+  assert.notEqual(normalized, messages);
+});
+
 test('合法会话序列化超过1MB时拒绝写入并保留原存储', () => {
   const originalRaw = JSON.stringify({
     version: 1,

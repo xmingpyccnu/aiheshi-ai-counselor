@@ -108,6 +108,7 @@ test('我的页提供本地资料和可恢复历史入口', () => {
   assert.match(html, />保存到当前设备</);
   assert.match(html, /id="historyList"/);
   assert.match(html, /id="clearAllHistory"/);
+  assert.match(html, /id="msgInput"[^>]+maxlength="8000"/);
   assert.match(html, /资料仅保存在当前设备，不等于学校账号。/);
   assert.match(html, /在成长模块提问时，这些资料会随当次请求发送给AI。/);
   assert.match(html, /心理对话不保存到本地历史，刷新或关闭页面后不恢复。/);
@@ -140,17 +141,17 @@ test('对话初始化恢复非心理历史并接入年级化欢迎语', () => {
 
 test('对话仅持久化非心理模块且反馈状态会同步', () => {
   const source = read('js/chat.js');
-  assert.match(source, /persistCurrentSession\(\)/);
-  assert.match(source, /persistCurrentSession\(\)\s*{\s*if\s*\(this\.currentScene\s*===\s*2\)\s*return;/s);
-  assert.match(source, /this\.localStore\.saveSession\(this\.currentScene,\s*this\.sessions\[this\.currentScene\]\)/);
-  assert.match(source, /this\.sessions\[this\.currentScene\]\.push\(message\);\s*this\.persistCurrentSession\(\)/s);
-  assert.match(source, /message\.feedbackStatus\s*=\s*'resolved';\s*this\.persistCurrentSession\(\)/s);
-  assert.match(source, /message\.feedbackStatus\s*=\s*'unresolved';\s*this\.persistCurrentSession\(\)/s);
+  assert.match(source, /persistCurrentSession\(targetScene\s*=\s*this\.currentScene\)/);
+  assert.match(source, /if\s*\(targetScene\s*===\s*2\)\s*return true;/);
+  assert.match(source, /this\.localStore\.saveSession\(targetScene,\s*normalized\)/);
+  assert.match(source, /this\.sessions\[targetScene\]\.push\(message\);\s*this\.notePersistenceResult\(this\.persistCurrentSession\(targetScene\)\)/s);
+  assert.match(source, /message\.feedbackStatus\s*=\s*'resolved';[\s\S]*this\.persistCurrentSession\(targetScene\)/);
+  assert.match(source, /message\.feedbackStatus\s*=\s*'unresolved';[\s\S]*this\.persistCurrentSession\(targetScene\)/);
 });
 
 test('仅成长请求带本地资料并提供历史管理', () => {
   const source = read('js/chat.js');
-  assert.match(source, /profile:\s*this\.currentScene\s*===\s*1\s*\?\s*this\.profile\s*:\s*undefined/);
+  assert.match(source, /profile:\s*requestScene\s*===\s*1\s*\?\s*this\.profile\s*:\s*undefined/);
   assert.match(source, /renderHistoryList\(\)/);
   assert.match(source, /clearSession\(sceneIndex\)/);
   assert.match(source, /clearAllSessions\(\)/);
@@ -163,6 +164,13 @@ test('删除本地历史后会同步当前对话界面', () => {
   const source = read('js/chat.js');
   assert.match(source, /this\.sessions\[sceneIndex\]\s*=\s*\[\];\s*if\s*\(this\.currentScene\s*===\s*sceneIndex\)\s*this\.renderCurrentSession\(\)/s);
   assert.match(source, /this\.sessions\[3\]\s*=\s*\[\];\s*if\s*\(this\.currentScene\s*!==\s*2\)\s*this\.renderCurrentSession\(\)/s);
+});
+
+test('本地历史动态按钮标明模块且删除后转移焦点', () => {
+  const source = read('js/chat.js');
+  assert.match(source, /restore\.setAttribute\('aria-label',\s*`恢复\$\{sceneName\}对话`\)/);
+  assert.match(source, /remove\.setAttribute\('aria-label',\s*`删除\$\{sceneName\}本地历史`\)/);
+  assert.match(source, /this\.historyList\.focus\(\)/);
 });
 
 test('本地资料和历史控件有暖纸风格与可见焦点', () => {
