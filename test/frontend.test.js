@@ -93,3 +93,87 @@ test('场景切换会恢复各模块已有对话', () => {
   assert.match(source, /renderCurrentSession/);
   assert.match(source, /save:\s*false/);
 });
+
+test('我的页提供本地资料和可恢复历史入口', () => {
+  const html = read('index.html');
+  assert.match(html, /<form[^>]+id="profileForm"/);
+  assert.match(html, /<select[^>]+id="gradeSelect"/);
+  assert.match(html, /value="freshman"[^>]*>大一/);
+  assert.match(html, /value="sophomore"[^>]*>大二/);
+  assert.match(html, /value="junior"[^>]*>大三/);
+  assert.match(html, /value="senior"[^>]*>大四/);
+  assert.match(html, /<input[^>]+id="majorInput"[^>]+maxlength="40"/);
+  assert.match(html, /<textarea[^>]+id="goalInput"[^>]+maxlength="120"/);
+  assert.match(html, /id="careerTrack"[^>]+aria-live="polite"/);
+  assert.match(html, />保存到当前设备</);
+  assert.match(html, /id="historyList"/);
+  assert.match(html, /id="clearAllHistory"/);
+  assert.match(html, /资料仅保存在当前设备，不等于学校账号。/);
+  assert.match(html, /在成长模块提问时，这些资料会随当次请求发送给AI。/);
+  assert.match(html, /心理对话不保存到本地历史，刷新或关闭页面后不恢复。/);
+  assert.doesNotMatch(html, /<span>历史记录<\/span>/);
+  assert.doesNotMatch(html, /<span>年级与专业<\/span>/);
+  assert.match(html, /<span>办理进度<\/span><small>待学校系统接入<\/small>/);
+});
+
+test('本地存储和年级资料模块在对话脚本前按顺序加载', () => {
+  const html = read('index.html');
+  const storageIndex = html.indexOf('<script src="js/storage.js"></script>');
+  const profileIndex = html.indexOf('<script src="js/profile.js"></script>');
+  const chatIndex = html.indexOf('<script src="js/chat.js"></script>');
+  assert.ok(storageIndex >= 0);
+  assert.ok(profileIndex > storageIndex);
+  assert.ok(chatIndex > profileIndex);
+});
+
+test('对话初始化恢复非心理历史并接入年级化欢迎语', () => {
+  const source = read('js/chat.js');
+  assert.match(source, /this\.localStore\s*=\s*createLocalStateStore\(window\.localStorage\)/);
+  assert.match(source, /const localState\s*=\s*this\.localStore\.load\(\)/);
+  assert.match(source, /this\.profile\s*=\s*localState\.profile/);
+  assert.match(source, /this\.sessions\s*=\s*\[\s*localState\.sessions\[0\],\s*localState\.sessions\[1\],\s*\[\],\s*localState\.sessions\[3\]\s*\]/s);
+  assert.match(source, /getCurrentSceneConfig\(\)/);
+  assert.match(source, /getCareerTrack\(this\.profile\.grade\)/);
+  assert.match(source, /version/);
+  assert.match(source, /renderCareerTrack\(\)/);
+});
+
+test('对话仅持久化非心理模块且反馈状态会同步', () => {
+  const source = read('js/chat.js');
+  assert.match(source, /persistCurrentSession\(\)/);
+  assert.match(source, /persistCurrentSession\(\)\s*{\s*if\s*\(this\.currentScene\s*===\s*2\)\s*return;/s);
+  assert.match(source, /this\.localStore\.saveSession\(this\.currentScene,\s*this\.sessions\[this\.currentScene\]\)/);
+  assert.match(source, /this\.sessions\[this\.currentScene\]\.push\(message\);\s*this\.persistCurrentSession\(\)/s);
+  assert.match(source, /message\.feedbackStatus\s*=\s*'resolved';\s*this\.persistCurrentSession\(\)/s);
+  assert.match(source, /message\.feedbackStatus\s*=\s*'unresolved';\s*this\.persistCurrentSession\(\)/s);
+});
+
+test('仅成长请求带本地资料并提供历史管理', () => {
+  const source = read('js/chat.js');
+  assert.match(source, /profile:\s*this\.currentScene\s*===\s*1\s*\?\s*this\.profile\s*:\s*undefined/);
+  assert.match(source, /renderHistoryList\(\)/);
+  assert.match(source, /clearSession\(sceneIndex\)/);
+  assert.match(source, /clearAllSessions\(\)/);
+  assert.match(source, /只删除当前设备上的该模块历史，是否继续？/);
+  assert.match(source, /将清除当前设备上的校园、成长和事务历史，是否继续？/);
+  assert.doesNotMatch(source, /(?:profile|major|goal|grade)[^\n]{0,80}\.innerHTML\s*=/i);
+});
+
+test('删除本地历史后会同步当前对话界面', () => {
+  const source = read('js/chat.js');
+  assert.match(source, /this\.sessions\[sceneIndex\]\s*=\s*\[\];\s*if\s*\(this\.currentScene\s*===\s*sceneIndex\)\s*this\.renderCurrentSession\(\)/s);
+  assert.match(source, /this\.sessions\[3\]\s*=\s*\[\];\s*if\s*\(this\.currentScene\s*!==\s*2\)\s*this\.renderCurrentSession\(\)/s);
+});
+
+test('本地资料和历史控件有暖纸风格与可见焦点', () => {
+  const css = read('css/styles.css');
+  for (const className of [
+    'profile-form', 'career-track', 'history-list', 'history-item',
+    'profile-save', 'clear-history', 'local-only-note',
+  ]) {
+    assert.match(css, new RegExp(`\\.${className}\\b`));
+  }
+  assert.match(css, /\.profile-form[\s\S]*min-height:\s*44px/);
+  assert.match(css, /:focus-visible/);
+  assert.doesNotMatch(css, /linear-gradient\([^)]*(?:#?8b5cf6|#?7c3aed|purple)/i);
+});

@@ -2,7 +2,10 @@ class ChatApp {
   constructor() {
     this.currentScene = 0;
     this.currentView = 'home';
-    this.sessions = [[], [], [], []];
+    this.localStore = createLocalStateStore(window.localStorage);
+    const localState = this.localStore.load();
+    this.profile = localState.profile;
+    this.sessions = [localState.sessions[0], localState.sessions[1], [], localState.sessions[3]];
     this.typingEl = null;
     this.lastFocusedElement = null;
     this.isProcessing = false;
@@ -26,6 +29,12 @@ class ChatApp {
     this.handoffModal = document.getElementById('handoffModal');
     this.handoffSummary = document.getElementById('handoffSummary');
     this.toastElement = document.getElementById('toast');
+    this.profileForm = document.getElementById('profileForm');
+    this.gradeSelect = document.getElementById('gradeSelect');
+    this.majorInput = document.getElementById('majorInput');
+    this.goalInput = document.getElementById('goalInput');
+    this.careerTrack = document.getElementById('careerTrack');
+    this.historyList = document.getElementById('historyList');
 
     this.sendBtn.addEventListener('click', () => this.handleSend());
     this.msgInput.addEventListener('keydown', event => {
@@ -42,6 +51,9 @@ class ChatApp {
     document.getElementById('profileBtn').addEventListener('click', () => this.navigateTo('profile'));
     document.getElementById('profileBackBtn').addEventListener('click', () => this.navigateTo('home'));
     document.getElementById('chatBackBtn').addEventListener('click', () => this.navigateTo('home'));
+    this.profileForm.addEventListener('submit', event => this.handleProfileSubmit(event));
+    this.gradeSelect.addEventListener('change', () => this.renderCareerTrack(this.gradeSelect.value));
+    document.getElementById('clearAllHistory').addEventListener('click', () => this.clearAllHistory());
 
     document.querySelectorAll('.bottom-item').forEach(item => {
       item.addEventListener('click', () => {
@@ -69,6 +81,7 @@ class ChatApp {
       else if (!this.crisisModal.classList.contains('hidden')) this.closeCrisis();
     });
 
+    this.renderProfileForm();
     this.renderCurrentSession();
     this.navigateTo('home');
     this.updateComposer();
@@ -88,7 +101,11 @@ class ChatApp {
       else item.removeAttribute('aria-current');
     });
 
-    if (view === 'profile') this.updateProfileStats();
+    if (view === 'profile') {
+      this.updateProfileStats();
+      this.renderCareerTrack();
+      this.renderHistoryList();
+    }
     if (view === 'chat') {
       this.scrollBottom();
       requestAnimationFrame(() => this.msgInput.focus());
@@ -108,7 +125,7 @@ class ChatApp {
   }
 
   renderCurrentSession() {
-    const scene = SCENES[this.currentScene];
+    const scene = this.getCurrentSceneConfig();
     this.navScene.textContent = scene.name;
     this.safetyBar.classList.toggle('hidden', this.currentScene !== 2);
     this.fabBtn.classList.toggle('hidden', this.currentScene !== 2);
@@ -132,7 +149,7 @@ class ChatApp {
     stack.className = 'stack left';
     const label = document.createElement('div');
     label.className = 'assistant-label';
-    label.textContent = `${scene.name} · 服务说明`;
+    label.textContent = `${scene.name} · ${scene.version || '服务说明'}`;
     const bubble = document.createElement('div');
     bubble.className = 'bubble ai';
     bubble.textContent = scene.welcome;
@@ -189,7 +206,10 @@ class ChatApp {
     row.appendChild(stack);
     this.chatScreen.appendChild(row);
 
-    if (options.save !== false) this.sessions[this.currentScene].push(message);
+    if (options.save !== false) {
+      this.sessions[this.currentScene].push(message);
+      this.persistCurrentSession();
+    }
     this.scrollBottom();
     return message;
   }
@@ -240,7 +260,10 @@ class ChatApp {
     row.append(this.createAvatar(), stack);
     this.chatScreen.appendChild(row);
 
-    if (options.save !== false) this.sessions[this.currentScene].push(message);
+    if (options.save !== false) {
+      this.sessions[this.currentScene].push(message);
+      this.persistCurrentSession();
+    }
     this.scrollBottom();
     return message;
   }
@@ -269,19 +292,28 @@ class ChatApp {
     yes.textContent = '已解决';
     yes.addEventListener('click', () => {
       message.feedbackStatus = 'resolved';
-      actions.innerHTML = '<span class="feedback-state">已标记为解决</span>';
+      this.persistCurrentSession();
+      this.replaceFeedbackState(actions, '已标记为解决');
     });
     const no = document.createElement('button');
     no.type = 'button';
     no.textContent = '未解决';
     no.addEventListener('click', () => {
       message.feedbackStatus = 'unresolved';
-      actions.innerHTML = `<span class="feedback-state">${message.followupDepth >= 1 ? '转入人工协助' : '正在补充回答…'}</span>`;
+      this.persistCurrentSession();
+      this.replaceFeedbackState(actions, message.followupDepth >= 1 ? '转入人工协助' : '正在补充回答…');
       if (message.followupDepth >= 1) this.showHumanHandoff(message);
       else this.requestSecondAnswer(message);
     });
     actions.append(label, yes, no);
     stack.appendChild(actions);
+  }
+
+  replaceFeedbackState(actions, text) {
+    const state = document.createElement('span');
+    state.className = 'feedback-state';
+    state.textContent = text;
+    actions.replaceChildren(state);
   }
 
   requestSecondAnswer(message) {
@@ -381,7 +413,11 @@ class ChatApp {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scene: this.currentScene, history }),
+        body: JSON.stringify({
+          scene: this.currentScene,
+          history,
+          profile: this.currentScene === 1 ? this.profile : undefined,
+        }),
         signal: controller.signal,
       });
       const data = await response.json().catch(() => ({}));
@@ -468,6 +504,152 @@ class ChatApp {
       const count = session.filter(message => message.who === 'user').length;
       document.getElementById(`profileStat${index}`).textContent = String(count);
     });
+  }
+
+  getCurrentSceneConfig() {
+    const scene = SCENES[this.currentScene];
+    if (this.currentScene !== 1) return scene;
+    const career = getCareerTrack(this.profile.grade);
+    return {
+      ...scene,
+      welcome: career.welcome,
+      tabs: career.tabs,
+      version: career.version,
+    };
+  }
+
+  renderProfileForm() {
+    this.gradeSelect.value = this.profile.grade;
+    this.majorInput.value = this.profile.major;
+    this.goalInput.value = this.profile.goal;
+    this.renderCareerTrack();
+  }
+
+  handleProfileSubmit(event) {
+    event.preventDefault();
+    const nextProfile = {
+      grade: this.gradeSelect.value,
+      major: this.majorInput.value.trim().slice(0, 40),
+      goal: this.goalInput.value.trim().slice(0, 120),
+    };
+
+    if (!this.localStore.saveProfile(nextProfile)) {
+      this.toast('本地资料保存失败，请检查浏览器存储设置');
+      return;
+    }
+
+    this.profile = this.localStore.load().profile;
+    this.renderProfileForm();
+    this.toast('本地资料已保存');
+  }
+
+  renderCareerTrack(grade = this.profile.grade) {
+    const track = getCareerTrack(grade);
+    const heading = document.createElement('strong');
+    heading.textContent = `学业与生涯成长 · ${track.version}`;
+    const description = document.createElement('p');
+    description.textContent = track.topics.length
+      ? `当前建议重点：${track.topics.join('、')}`
+      : '未选择年级，将使用通用版学业与生涯建议。';
+    this.careerTrack.replaceChildren(heading, description);
+  }
+
+  persistCurrentSession() {
+    if (this.currentScene === 2) return;
+    const saved = this.localStore.saveSession(this.currentScene, this.sessions[this.currentScene]);
+    if (!saved) {
+      this.toast('本地历史保存失败，当前对话仍可继续');
+      return false;
+    }
+
+    const session = this.sessions[this.currentScene];
+    const normalized = this.localStore.load().sessions[this.currentScene];
+    const trimmedCount = Math.max(0, session.length - normalized.length);
+    if (trimmedCount > 0) session.splice(0, trimmedCount);
+    return true;
+  }
+
+  renderHistoryList() {
+    const sceneIndexes = [0, 1, 3];
+    this.historyList.replaceChildren();
+
+    sceneIndexes.forEach(sceneIndex => {
+      const session = this.sessions[sceneIndex];
+      const item = document.createElement('article');
+      item.className = 'history-item';
+
+      const summary = document.createElement('div');
+      summary.className = 'history-summary';
+      const title = document.createElement('strong');
+      title.textContent = SCENES[sceneIndex].name;
+      const count = document.createElement('span');
+      count.textContent = `${session.length}条消息`;
+      const recent = [...session].reverse().find(message => message.who === 'user');
+      const excerpt = document.createElement('p');
+      excerpt.textContent = recent
+        ? this.summarizeHistoryQuestion(recent.text)
+        : '暂无本地记录';
+      summary.append(title, count, excerpt);
+
+      const actions = document.createElement('div');
+      actions.className = 'history-actions';
+      const restore = document.createElement('button');
+      restore.type = 'button';
+      restore.textContent = '恢复对话';
+      restore.disabled = session.length === 0;
+      restore.addEventListener('click', () => this.restoreHistory(sceneIndex));
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'history-delete';
+      remove.textContent = '删除';
+      remove.disabled = session.length === 0;
+      remove.addEventListener('click', () => this.deleteHistory(sceneIndex));
+      actions.append(restore, remove);
+
+      item.append(summary, actions);
+      this.historyList.appendChild(item);
+    });
+  }
+
+  summarizeHistoryQuestion(text) {
+    const compact = text.trim().replace(/\s+/g, ' ');
+    return compact.length > 48 ? `${compact.slice(0, 48)}…` : compact;
+  }
+
+  restoreHistory(sceneIndex) {
+    this.currentScene = sceneIndex;
+    this.renderCurrentSession();
+    this.navigateTo('chat');
+  }
+
+  deleteHistory(sceneIndex) {
+    if (!window.confirm('只删除当前设备上的该模块历史，是否继续？')) return;
+    if (!this.localStore.clearSession(sceneIndex)) {
+      this.toast('本地历史删除失败');
+      return;
+    }
+
+    this.sessions[sceneIndex] = [];
+    if (this.currentScene === sceneIndex) this.renderCurrentSession();
+    this.updateProfileStats();
+    this.renderHistoryList();
+    this.toast('该模块本地历史已删除');
+  }
+
+  clearAllHistory() {
+    if (!window.confirm('将清除当前设备上的校园、成长和事务历史，是否继续？')) return;
+    if (!this.localStore.clearAllSessions()) {
+      this.toast('本地历史清空失败');
+      return;
+    }
+
+    this.sessions[0] = [];
+    this.sessions[1] = [];
+    this.sessions[3] = [];
+    if (this.currentScene !== 2) this.renderCurrentSession();
+    this.updateProfileStats();
+    this.renderHistoryList();
+    this.toast('本地历史已清空');
   }
 
   replyToPlainText(parts = []) {
