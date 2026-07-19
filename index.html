@@ -19,7 +19,9 @@
             <img class="s-avatar" src="assets/A_cute_2D_cartoon_style_Chines_2026-07-10T15-22-43.png" alt="爱·合师">
             <h1 class="s-title">爱·合师</h1>
             <p class="s-sub">你的校园AI辅导员</p>
-            <button class="s-btn" id="enterBtn">开始使用</button>
+            <button class="s-btn" id="enterBtn" aria-describedby="splashStatus" disabled>开始使用</button>
+            <p id="splashStatus" class="splash-status" role="status" aria-live="polite">正在初始化服务，请稍候…若长时间无响应，请确认浏览器已启用JavaScript。
+            </p>
         </div>
 
         <main id="app" class="app hidden">

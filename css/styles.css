@@ -903,6 +903,21 @@ body{
   background:var(--app-bg);
   transform:scale(0.98); 
 }
+.splash .s-btn:disabled {
+  cursor:wait;
+  opacity:.76;
+}
+.splash-status {
+  max-width:280px;
+  min-height:2.8em;
+  margin:12px 0 0;
+  color:rgba(255,255,255,.82);
+  font-size:11px;
+  line-height:1.4;
+}
+.splash-status:empty {
+  visibility:hidden;
+}
 
 /* ===== App 进入动画 ===== */
 .app {
