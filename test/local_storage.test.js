@@ -170,6 +170,33 @@ test('45条合法消息只保留最后40条', () => {
   assert.equal(savedMessages.at(-1).text, '问题44');
 });
 
+test('合法会话序列化超过1MB时拒绝写入并保留原存储', () => {
+  const originalRaw = JSON.stringify({
+    version: 1,
+    profile: { grade: 'senior', major: '心理学', goal: '毕业' },
+    sessions: { 0: [userMessage(1)], 1: [], 3: [] },
+  });
+  const storage = new MemoryStorage({ [STORAGE_KEY]: originalRaw });
+  const longBody = '内'.repeat(8_000);
+  const messages = Array.from({ length: 40 }, (_, messageIndex) => ({
+    who: 'ai',
+    id: `ai-${messageIndex}`,
+    createdAt: 1_700_000_000_000 + messageIndex,
+    parts: Array.from({ length: 12 }, (_, partIndex) => ({
+      type: 'card',
+      title: `建议${partIndex}`,
+      body: longBody,
+    })),
+  }));
+  assert.ok(JSON.stringify(messages).length > 1024 * 1024);
+
+  const result = createLocalStateStore(storage).saveSession(1, messages);
+
+  assert.equal(result, false);
+  assert.equal(storage.setCalls, 0);
+  assert.equal(storage.getItem(STORAGE_KEY), originalRaw);
+});
+
 test('saveProfile清洗年级并截断专业和目标', () => {
   const storage = new MemoryStorage();
   const store = createLocalStateStore(storage);

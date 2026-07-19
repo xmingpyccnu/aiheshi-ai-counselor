@@ -166,7 +166,9 @@
 
     function write(state) {
       try {
-        storage.setItem(STORAGE_KEY, JSON.stringify(state));
+        const raw = JSON.stringify(state);
+        if (raw.length > MAX_RAW_JSON_LENGTH) return false;
+        storage.setItem(STORAGE_KEY, raw);
         return true;
       } catch (_error) {
         return false;
