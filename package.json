@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
-    "dev": "node --env-file-if-exists=.env server.js"
+    "dev": "node --env-file-if-exists=.env server.js",
+    "build:handbook": "node scripts/build_handbook_index.js",
+    "test": "node --test"
   },
   "keywords": [
     "ai",

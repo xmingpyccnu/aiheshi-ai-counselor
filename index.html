@@ -6,103 +6,186 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <meta name="format-detection" content="telephone=no">
-    <title>爱·合师 AI辅导员</title>
+    <meta name="theme-color" content="#0f6462">
+    <title>爱·合师AI辅导员</title>
     <link rel="stylesheet" href="css/styles.css">
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="assets/A_cute_2D_cartoon_style_Chines_2026-07-10T15-22-43.png">
 </head>
 <body>
     <div class="app-container">
-        <!-- Splash 启动页 -->
         <div id="splash" class="splash">
+            <div class="splash-seal">HFNU</div>
             <img class="s-avatar" src="assets/A_cute_2D_cartoon_style_Chines_2026-07-10T15-22-43.png" alt="爱·合师">
             <h1 class="s-title">爱·合师</h1>
-            <p class="s-sub">你的校园 AI 辅导员</p>
-            <button class="s-btn" id="enterBtn" aria-label="进入主应用">进入对话</button>
+            <p class="s-sub">你的校园AI辅导员</p>
+            <button class="s-btn" id="enterBtn">开始使用</button>
         </div>
 
-        <!-- 主聊天界面 -->
-        <div id="app" class="app hidden">
-            <!-- 导航栏 -->
-            <nav class="navbar" role="navigation" aria-label="顶部导航">
-                <div class="nav-left">
-                    <span id="navScene" class="nav-scene" aria-live="polite"></span>
+        <main id="app" class="app hidden">
+            <section id="homeScreen" class="screen-view home-view" aria-labelledby="homeTitle">
+                <header class="home-header">
+                    <div>
+                        <span class="home-eyebrow">HEFEI NORMAL UNIVERSITY</span>
+                        <h1 id="homeTitle">爱·合师</h1>
+                    </div>
+                    <button id="profileBtn" class="profile-entry" aria-label="进入我的">
+                        <img src="assets/A_cute_2D_cartoon_style_Chines_2026-07-10T15-22-43.png" alt="">
+                        <span>我的</span>
+                    </button>
+                </header>
+
+                <div class="home-scroll">
+                    <section class="home-hero" aria-label="服务介绍">
+                        <div class="hero-kicker">校园事务服务台</div>
+                        <h2>今天想解决<br>哪一件事？</h2>
+                        <p>选择服务模块后开始对话。涉及校规的回答会标注制度名称和页码。</p>
+                        <div class="hero-proof"><span></span>已接入《2023合师学生手册》</div>
+                    </section>
+
+                    <div class="section-heading">
+                        <div>
+                            <span>01 / SERVICES</span>
+                            <h2>学生服务</h2>
+                        </div>
+                        <p>四类服务，各有边界</p>
+                    </div>
+
+                    <section class="service-grid" aria-label="服务模块">
+                        <button class="service-card campus" data-scene="0">
+                            <span class="service-number">01</span>
+                            <span class="service-icon">校</span>
+                            <strong>校园生活</strong>
+                            <small>场馆·宿舍·安全·校园交流</small>
+                            <span class="service-arrow" aria-hidden="true">↗</span>
+                        </button>
+                        <button class="service-card growth" data-scene="1">
+                            <span class="service-number">02</span>
+                            <span class="service-icon">长</span>
+                            <strong>学业与生涯成长</strong>
+                            <small>学习·升学·竞赛·实习就业</small>
+                            <span class="service-arrow" aria-hidden="true">↗</span>
+                        </button>
+                        <button class="service-card mind" data-scene="2">
+                            <span class="service-number">03</span>
+                            <span class="service-icon">心</span>
+                            <strong>心理陪伴</strong>
+                            <small>情绪·压力·关系·睡眠困扰</small>
+                            <span class="service-arrow" aria-hidden="true">↗</span>
+                        </button>
+                        <button class="service-card affairs" data-scene="3">
+                            <span class="service-number">04</span>
+                            <span class="service-icon">办</span>
+                            <strong>事务办理</strong>
+                            <small>学籍·奖助·评优·党团事务</small>
+                            <span class="service-arrow" aria-hidden="true">↗</span>
+                        </button>
+                    </section>
+
+                    <aside class="source-notice">
+                        <span class="source-mark">据</span>
+                        <div><strong>回答有出处</strong><p>校内制度优先检索学生手册；当前时间、金额和入口仍会核验最新通知。</p></div>
+                    </aside>
                 </div>
-                <div class="nav-title">爱·合师</div>
-                <div class="nav-right">
-                    <img class="mini-avatar" src="assets/A_cute_2D_cartoon_style_Chines_2026-07-10T15-22-43.png" alt="AI 辅导员头像">
+            </section>
+
+            <section id="chatView" class="screen-view chat-view hidden" aria-label="AI对话">
+                <nav class="navbar" aria-label="对话导航">
+                    <button id="chatBackBtn" class="nav-back" aria-label="返回服务首页">←</button>
+                    <div class="nav-context">
+                        <span id="navScene" class="nav-scene" aria-live="polite"></span>
+                        <strong>爱·合师</strong>
+                    </div>
+                    <img class="mini-avatar" src="assets/A_cute_2D_cartoon_style_Chines_2026-07-10T15-22-43.png" alt="AI辅导员头像">
+                </nav>
+
+                <div id="safetyBar" class="safety-bar hidden" role="alert">
+                    <span class="s-text">如果你正处于危险中，请立即使用紧急求助</span>
+                    <button class="s-btn" id="safetyBtn">紧急求助</button>
                 </div>
+
+                <div id="chatScreen" class="chat-screen" role="log" aria-live="polite" aria-label="聊天消息"></div>
+
+                <button id="fabBtn" class="fab hidden" aria-label="紧急求助">
+                    <span aria-hidden="true">!</span>紧急求助
+                </button>
+
+                <div class="input-bar">
+                    <label for="msgInput" class="sr-only">输入消息</label>
+                    <textarea id="msgInput" placeholder="描述你的问题…" rows="1" autocomplete="off" spellcheck="false"></textarea>
+                    <button class="send" id="sendBtn" aria-label="发送消息">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20.5 22 12 3 3.5V10l13 2-13 2z"/></svg>
+                    </button>
+                </div>
+            </section>
+
+            <section id="profileView" class="screen-view profile-view hidden" aria-labelledby="profileTitle">
+                <header class="profile-header">
+                    <button id="profileBackBtn" class="round-back" aria-label="返回首页">←</button>
+                    <span>个人中心</span>
+                </header>
+                <div class="profile-scroll">
+                    <section class="visitor-card">
+                        <img src="assets/A_cute_2D_cartoon_style_Chines_2026-07-10T15-22-43.png" alt="访客头像">
+                        <div><span>当前身份</span><h1 id="profileTitle">访客同学</h1><p>登录功能将在账户阶段接入</p></div>
+                        <span class="visitor-badge">访客</span>
+                    </section>
+
+                    <section class="profile-block">
+                        <div class="section-heading compact"><div><span>02 / HISTORY</span><h2>对话概览</h2></div></div>
+                        <div class="history-stats">
+                            <div><strong id="profileStat0">0</strong><span>校园</span></div>
+                            <div><strong id="profileStat1">0</strong><span>成长</span></div>
+                            <div><strong id="profileStat2">0</strong><span>心理</span></div>
+                            <div><strong id="profileStat3">0</strong><span>事务</span></div>
+                        </div>
+                    </section>
+
+                    <section class="profile-block future-list">
+                        <div><span>历史记录</span><small>当前设备会话</small></div>
+                        <div><span>办理进度</span><small>待学校系统接入</small></div>
+                        <div><span>年级与专业</span><small>待账户功能接入</small></div>
+                    </section>
+
+                    <p class="privacy-note">心理对话与普通服务记录将在账户阶段分开管理。本原型不会把当前会话保存到服务器数据库。</p>
+                </div>
+            </section>
+
+            <nav id="bottomNav" class="bottom-nav" aria-label="主导航">
+                <button class="bottom-item active" data-view="home" aria-current="page"><span>⌂</span><b>首页</b></button>
+                <button class="bottom-item" data-view="chat"><span>◌</span><b>对话</b></button>
+                <button class="bottom-item emergency" data-action="crisis"><span>!</span><b>求助</b></button>
+                <button class="bottom-item" data-view="profile"><span>○</span><b>我的</b></button>
             </nav>
+        </main>
 
-            <!-- 心理场景安全黄条 -->
-            <div id="safetyBar" class="safety-bar hidden" role="alert">
-                <span class="s-text">如果你正在经历困难，可以点击「紧急求助」获取支持</span>
-                <button class="s-btn" id="safetyBtn" aria-label="打开紧急求助弹窗">紧急求助</button>
-            </div>
-
-            <!-- 聊天消息区 -->
-            <div id="chatScreen" class="chat-screen" role="log" aria-live="polite" aria-label="聊天消息">
-                <!-- 消息将通过JS动态添加 -->
-            </div>
-
-            <!-- 心理场景常驻紧急求助 FAB -->
-            <button id="fabBtn" class="fab hidden" aria-label="紧急求助">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
-                紧急求助
-            </button>
-
-            <!-- 输入栏 -->
-            <div class="input-bar">
-                <label for="msgInput" class="sr-only">输入消息</label>
-                <textarea id="msgInput" placeholder="输入消息..." rows="1" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="消息输入框"></textarea>
-                <button class="send" id="sendBtn" aria-label="发送消息">
-                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-                </button>
-            </div>
-
-            <!-- 底部 Tab Bar -->
-            <nav class="tabbar" role="tablist" aria-label="场景切换">
-                <button class="tab active" data-index="0" role="tab" aria-selected="true" aria-label="校园生活">
-                    <div class="t-ico">
-                        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
-                    </div>
-                    <span>校园</span>
-                </button>
-                <button class="tab" data-index="1" role="tab" aria-selected="false" aria-label="技能提升">
-                    <div class="t-ico">
-                        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
-                    </div>
-                    <span>技能</span>
-                </button>
-                <button class="tab" data-index="2" role="tab" aria-selected="false" aria-label="心理陪伴">
-                    <div class="t-ico">
-                        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
-                    </div>
-                    <span>心理</span>
-                </button>
-                <button class="tab" data-index="3" role="tab" aria-selected="false" aria-label="事务办理">
-                    <div class="t-ico">
-                        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14H7v-2h5v2zm5-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
-                    </div>
-                    <span>事务</span>
-                </button>
-            </nav>
-        </div>
-
-        <!-- 危机弹层 -->
         <div id="crisisModal" class="crisis-overlay hidden" role="dialog" aria-modal="true" aria-label="紧急求助">
             <div class="crisis-card">
                 <button class="cr-close" id="crisisClose" aria-label="关闭">&times;</button>
                 <div class="cr-title">紧急求助</div>
-                <p class="cr-line">如果你正在经历困难，请立即联系：</p>
-                <button class="cr-btn" id="crisisCall">拨打心理援助热线</button>
-                <p class="cr-line">全国24小时心理援助热线：<span class="cr-tel">400-161-9995</span></p>
-                <p class="cr-line">北京心理危机研究与干预中心：<span class="cr-tel">010-82951332</span></p>
-                <p class="cr-sub">你不是一个人，我们都在这里支持你</p>
+                <p class="cr-line">如果危险正在发生、已经采取行动或已经受伤，请立即拨打110或120，并请身边可信任的人陪伴。</p>
+                <a class="cr-btn" href="tel:120">拨打120急救电话</a>
+                <a class="cr-btn secondary" href="tel:12356">拨打全国心理援助热线12356</a>
+                <p class="cr-line">安徽精神卫生中心24小时心理援助热线：<a class="cr-tel" href="tel:055163666903">0551-63666903</a></p>
+                <p class="cr-line">合肥师范学院心理健康教育中心：</p>
+                <p class="cr-line">锦绣校区<a class="cr-tel" href="tel:055163817443">0551-63817443</a><br>滨湖校区<a class="cr-tel" href="tel:055162873872">0551-62873872</a></p>
+                <p class="cr-sub">校内服务时间可能调整，请以学校最新通知为准。此页面不能替代紧急救援或专业诊疗。</p>
+                <p class="cr-sources">来源：<a href="https://www.nhc.gov.cn/yzygj/c100068/202412/49a1a65386cd4be582d4702fd0926ee8.shtml" target="_blank" rel="noopener noreferrer">国家卫生健康委12356通知</a>；<a href="https://www.hfnu.edu.cn/info/1045/367023.htm" target="_blank" rel="noopener noreferrer">合肥师范学院心理服务通告</a></p>
             </div>
         </div>
 
-        <!-- Toast -->
+        <div id="handoffModal" class="handoff-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="handoffTitle">
+            <div class="handoff-card">
+                <button id="handoffClose" class="cr-close" aria-label="关闭">&times;</button>
+                <span class="handoff-label">人工转介</span>
+                <h2 id="handoffTitle">把问题交给真实的人</h2>
+                <p>线上人工渠道尚未配置。你可以复制下方摘要，联系所在学院辅导员或对应业务部门，避免重新整理问题。</p>
+                <pre id="handoffSummary" tabindex="0"></pre>
+                <button id="copyHandoff" class="handoff-copy">复制问题摘要</button>
+                <p class="handoff-note">此操作只复制到当前设备剪贴板，不会自动发送或创建工单。</p>
+            </div>
+        </div>
+
         <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </div>
 

@@ -1,182 +1,316 @@
-// Agent 工具模块 —— 提供搜索、时间、网页抓取能力
+// Agent工具模块：提供受限搜索、北京时间和安全网页抓取能力。
 
+const dns = require('node:dns').promises;
+const net = require('node:net');
 const cheerio = require('cheerio');
+const { searchHandbook } = require('./handbook_search');
 
-/**
- * 工具 1: search_web — 搜索互联网
- * 使用 Bing 搜索引擎抓取结果，返回标题+链接+摘要
- * @param {string} query - 搜索关键词
- * @returns {string} 格式化的搜索结果
- */
-async function search_web(query) {
-  const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=zh-cn&cc=cn`;
+const SEARCH_TIMEOUT_MS = 10000;
+const FETCH_TIMEOUT_MS = 8000;
+const MAX_SEARCH_QUERY_CHARS = 200;
+const MAX_RESPONSE_BYTES = 1024 * 1024;
+const MAX_EXTRACTED_CHARS = 3000;
 
-  const resp = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-      'Accept-Language': 'zh-CN,zh;q=0.9',
-    },
-    signal: AbortSignal.timeout(10000),
-  });
-
-  if (!resp.ok) {
-    return `搜索失败: HTTP ${resp.status}`;
+function isBlockedIpv4(address) {
+  const parts = address.split('.').map(Number);
+  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return true;
   }
 
-  const html = await resp.text();
-  const $ = cheerio.load(html);
-  const results = [];
-
-  // Bing 结果结构: li.b_algo / div.b_algo
-  $('li.b_algo, div.b_algo').each((i, el) => {
-    if (i >= 8) return false; // 最多 8 条
-    const $el = $(el);
-    const title = $el.find('h2').text().trim();
-    const link = $el.find('h2 a').attr('href') || '';
-    const snippet = $el.find('.b_caption p, .b_lineclamp2, p').first().text().trim();
-    if (title && link) {
-      results.push(`${i + 1}. ${title}\n   链接: ${link}\n   摘要: ${snippet}`);
-    }
-  });
-
-  if (results.length === 0) {
-    return `未找到关于"${query}"的搜索结果。`;
-  }
-
-  return `搜索"${query}"的结果（共${results.length}条）:\n\n${results.join('\n\n')}`;
+  const [a, b, c] = parts;
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 0 && c === 0) ||
+    (a === 192 && b === 0 && c === 2) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113) ||
+    a >= 224
+  );
 }
 
-/**
- * 工具 2: get_current_time — 获取当前日期时间
- * @returns {string} 中文格式的当前时间
- */
-function get_current_time() {
-  const now = new Date();
-  const weekday = ['日', '一', '二', '三', '四', '五', '六'][now.getDay()];
-  const beijing = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
-  return `${beijing.getFullYear()}年${beijing.getMonth() + 1}月${beijing.getDate()}日 ` +
-    `星期${weekday} ` +
-    `${String(beijing.getHours()).padStart(2, '0')}:${String(beijing.getMinutes()).padStart(2, '0')} CST`;
-}
-
-/**
- * 工具 3: fetch_url — 抓取网页正文
- * @param {string} url - 目标网页地址
- * @returns {string} 提取的网页文本（截取前 3000 字）
- */
-async function fetch_url(url) {
-  if (!url.startsWith('http')) {
-    return `错误: 无效的URL "${url}"`;
+function isBlockedIpv6(address) {
+  const normalized = address.toLowerCase().split('%')[0];
+  if (
+    normalized === '::' ||
+    normalized === '::1' ||
+    normalized.startsWith('::ffff:') ||
+    normalized.startsWith('fc') ||
+    normalized.startsWith('fd') ||
+    normalized.startsWith('fe8') ||
+    normalized.startsWith('fe9') ||
+    normalized.startsWith('fea') ||
+    normalized.startsWith('feb')
+  ) {
+    return true;
   }
 
+  // 只允许2000::/3范围内的全局单播地址。
+  const firstGroup = Number.parseInt(normalized.split(':')[0], 16);
+  return !Number.isInteger(firstGroup) || (firstGroup & 0xe000) !== 0x2000;
+}
+
+function isBlockedAddress(address) {
+  const ipVersion = net.isIP(address);
+  if (ipVersion === 4) return isBlockedIpv4(address);
+  if (ipVersion === 6) return isBlockedIpv6(address);
+  return true;
+}
+
+async function validateExternalUrl(rawUrl) {
+  let parsed;
   try {
-    const resp = await fetch(url, {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error('无效的URL');
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('只允许访问HTTP或HTTPS地址');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('URL中不允许包含凭据');
+  }
+
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname.endsWith('.local') ||
+    hostname.endsWith('.internal')
+  ) {
+    throw new Error('不允许访问本机或内部网络地址');
+  }
+
+  if (net.isIP(hostname)) {
+    if (isBlockedAddress(hostname)) throw new Error('不允许访问本机或内部网络地址');
+    return parsed;
+  }
+
+  let addresses;
+  try {
+    addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+  } catch {
+    throw new Error('无法解析目标主机');
+  }
+  if (!addresses.length || addresses.some(item => isBlockedAddress(item.address))) {
+    throw new Error('不允许访问本机或内部网络地址');
+  }
+
+  return parsed;
+}
+
+async function readResponseText(response, maxBytes = MAX_RESPONSE_BYTES) {
+  const contentLength = Number.parseInt(response.headers.get('content-length') || '', 10);
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    throw new Error('网页内容超过大小限制');
+  }
+
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error('网页内容超过大小限制');
+    }
+    chunks.push(Buffer.from(value));
+  }
+
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function search_web(query) {
+  const normalizedQuery = typeof query === 'string' ? query.trim() : '';
+  if (!normalizedQuery) return '搜索失败:搜索关键词不能为空';
+  if (normalizedQuery.length > MAX_SEARCH_QUERY_CHARS) {
+    return `搜索失败:搜索关键词不能超过${MAX_SEARCH_QUERY_CHARS}字符`;
+  }
+
+  const url = `https://www.bing.com/search?q=${encodeURIComponent(normalizedQuery)}&setlang=zh-cn&cc=cn`;
+  try {
+    const response = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
       },
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
     });
 
-    if (!resp.ok) {
-      return `抓取失败: HTTP ${resp.status}`;
+    if (!response.ok) return `搜索失败:HTTP ${response.status}`;
+    const html = await readResponseText(response);
+    const $ = cheerio.load(html);
+    const results = [];
+
+    $('li.b_algo, div.b_algo').each((index, element) => {
+      if (index >= 8) return false;
+      const item = $(element);
+      const title = item.find('h2').text().trim();
+      const link = item.find('h2 a').attr('href') || '';
+      const snippet = item.find('.b_caption p, .b_lineclamp2, p').first().text().trim();
+      if (title && link) {
+        results.push(`${index + 1}. ${title}\n   链接:${link}\n   摘要:${snippet}`);
+      }
+      return undefined;
+    });
+
+    if (results.length === 0) return `未找到关于“${normalizedQuery}”的搜索结果。`;
+    return `搜索“${normalizedQuery}”的结果（共${results.length}条）:\n\n${results.join('\n\n')}`;
+  } catch (error) {
+    return `搜索失败:${error.name === 'TimeoutError' ? '请求超时' : error.message}`;
+  }
+}
+
+function get_current_time(now = new Date()) {
+  const timeZone = 'Asia/Shanghai';
+  const dateParts = Object.fromEntries(
+    new Intl.DateTimeFormat('zh-CN', {
+      timeZone,
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+    }).formatToParts(now).map(part => [part.type, part.value])
+  );
+  const weekday = new Intl.DateTimeFormat('zh-CN', {
+    timeZone,
+    weekday: 'long',
+  }).format(now);
+  const timeParts = Object.fromEntries(
+    new Intl.DateTimeFormat('zh-CN', {
+      timeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(now).map(part => [part.type, part.value])
+  );
+
+  return `${dateParts.year}年${dateParts.month}月${dateParts.day}日 ${weekday} ${timeParts.hour}:${timeParts.minute} CST`;
+}
+
+async function fetch_url(rawUrl) {
+  try {
+    const url = await validateExternalUrl(rawUrl);
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        Accept: 'text/html,text/plain;q=0.9',
+      },
+      redirect: 'error',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+
+    if (!response.ok) return `抓取失败:HTTP ${response.status}`;
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.includes('text/html') && !contentType.includes('text/plain')) {
+      return '抓取失败:目标不是HTML或纯文本网页';
     }
 
-    const html = await resp.text();
+    const html = await readResponseText(response);
     const $ = cheerio.load(html);
+    $('script, style, nav, footer, header, iframe, object, .sidebar, .nav, .footer, .header').remove();
 
-    // 移除无用标签
-    $('script, style, nav, footer, header, .sidebar, .nav, .footer, .header').remove();
-
-    // 提取正文
     let text = $('body').text()
       .replace(/\s{2,}/g, '\n')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
-
-    if (text.length > 3000) {
-      text = text.substring(0, 3000) + '...[已截断，全文请访问原链接]';
+    if (text.length > MAX_EXTRACTED_CHARS) {
+      text = `${text.substring(0, MAX_EXTRACTED_CHARS)}...[已截断，全文请访问原链接]`;
     }
-
-    return `网页内容 (${url}):\n${text}`;
-  } catch (err) {
-    return `抓取失败: ${err.message}`;
+    return `网页内容(${url.toString()}):\n${text}`;
+  } catch (error) {
+    const message = error.name === 'TimeoutError'
+      ? '请求超时'
+      : error.message.includes('redirect')
+        ? '目标网页发生重定向，出于安全原因未自动访问'
+        : error.message;
+    return `抓取失败:${message}`;
   }
 }
 
-// ---- 工具调度器 ----
-const TOOLS = {
-  search_web,
-  get_current_time,
-  fetch_url,
-};
+function search_handbook(query) {
+  return searchHandbook(query);
+}
 
-/**
- * 解析模型输出的 <tool_call> 并执行
- * @param {string} text - 模型原始输出
- * @returns {object} { toolResults: [{name, result}], remainingText: string }
- */
+const TOOLS = { search_web, search_handbook, get_current_time, fetch_url };
+
 function parseAndExecTools(text) {
   const toolResults = [];
-
-  // 匹配所有 <tool_call>...</tool_call> 块
   const toolRegex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
   let match;
 
   while ((match = toolRegex.exec(text)) !== null) {
     const block = match[1];
-    const nameMatch = block.match(/<name>(.*?)<\/name>/);
+    const nameMatch = block.match(/<name>([\s\S]*?)<\/name>/);
     if (!nameMatch) continue;
 
     const name = nameMatch[1].trim();
     const tool = TOOLS[name];
     if (!tool) {
-      toolResults.push({ name, result: `未知工具: ${name}` });
+      toolResults.push({ name, result: `未知工具:${name}` });
       continue;
     }
 
-    // 根据工具名提取参数
     if (name === 'get_current_time') {
       toolResults.push({ name, result: get_current_time() });
-    } else if (name === 'search_web') {
-      const queryMatch = block.match(/<query>(.*?)<\/query>/);
-      const query = queryMatch ? queryMatch[1].trim() : '';
-      if (!query) {
-        toolResults.push({ name, result: '错误: search_web 缺少 query 参数' });
-      } else {
-        toolResults.push({ name, result: '搜索中...', pending: true, promise: search_web(query) });
-      }
-    } else if (name === 'fetch_url') {
-      const urlMatch = block.match(/<url>(.*?)<\/url>/);
-      const url = urlMatch ? urlMatch[1].trim() : '';
-      if (!url) {
-        toolResults.push({ name, result: '错误: fetch_url 缺少 url 参数' });
-      } else {
-        toolResults.push({ name, result: '抓取中...', pending: true, promise: fetch_url(url) });
-      }
+      continue;
     }
+
+    const parameterName = name === 'search_web' || name === 'search_handbook'
+      ? 'query'
+      : 'url';
+    const parameterMatch = block.match(
+      new RegExp(`<${parameterName}>([\\s\\S]*?)</${parameterName}>`)
+    );
+    const value = parameterMatch ? parameterMatch[1].trim() : '';
+    if (!value) {
+      toolResults.push({ name, result: `错误:${name}缺少${parameterName}参数` });
+      continue;
+    }
+
+    toolResults.push({
+      name,
+      result: name === 'fetch_url' ? '抓取中...' : '检索中...',
+      pending: true,
+      promise: tool(value),
+    });
   }
 
-  // 去除模型输出中的 tool_call 标签，保留其余文本
-  const remainingText = text.replace(toolRegex, '').trim();
-
-  return { toolResults, remainingText };
+  return { toolResults, remainingText: text.replace(toolRegex, '').trim() };
 }
 
-/**
- * 等待所有 pending 的工具执行完成
- */
 async function resolvePending(toolResults) {
-  for (const tr of toolResults) {
-    if (tr.pending) {
-      try {
-        tr.result = await tr.promise;
-      } catch (err) {
-        tr.result = `工具执行失败: ${err.message}`;
-      }
-      delete tr.pending;
-      delete tr.promise;
+  await Promise.all(toolResults.map(async result => {
+    if (!result.pending) return;
+    try {
+      result.result = await result.promise;
+    } catch (error) {
+      result.result = `工具执行失败:${error.message}`;
     }
-  }
+    delete result.pending;
+    delete result.promise;
+  }));
 }
 
-module.exports = { TOOLS, parseAndExecTools, resolvePending };
+module.exports = {
+  TOOLS,
+  fetch_url,
+  get_current_time,
+  isBlockedAddress,
+  parseAndExecTools,
+  readResponseText,
+  resolvePending,
+  search_handbook,
+  search_web,
+  validateExternalUrl,
+};

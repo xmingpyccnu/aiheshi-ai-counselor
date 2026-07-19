@@ -1,109 +1,76 @@
-// 场景数据定义
+// 场景展示数据和网络失败时的安全兜底。
 const SCENES = [
   {
     name: '校园生活',
     icon: 'campus',
     description: '校园咨询',
-    welcome: '你好！我是爱·合师AI辅导员，可以帮你解答校园生活相关问题。',
-    tabs: ['图书馆', '教室', '食堂', '常见问题']
+    welcome: '你好！我可以帮你查找校园场所、生活服务和安全信息。具体时间与流程会先核验学校官方来源。',
+    tabs: ['图书馆', '教室', '食堂', '宿舍']
   },
   {
-    name: '技能提升',
-    icon: 'skill',
-    description: '师范生技能',
-    welcome: '你好！我可以帮你提升师范生教学技能。',
-    tabs: ['板书练习', '表达训练', '教资备考', '微课演练']
+    name: '学业与生涯成长',
+    icon: 'growth',
+    description: '学业与生涯',
+    welcome: '你好！告诉我你的年级、专业和当前目标，我可以协助你规划学习、升学、竞赛、实习或就业。',
+    tabs: ['课程学习', '升学备考', '竞赛科研', '实习就业']
   },
   {
     name: '心理陪伴',
     icon: 'heart',
     description: '心理支持',
-    welcome: '你好，我在这里陪着你。如果你愿意，可以和我聊聊。',
-    tabs: ['情绪倾诉', '压力管理', '人际交往', '自我认知']
+    welcome: '你好，我会认真听你说。你可以从情绪、压力、人际、睡眠或学习困扰谈起；如果涉及现实危险，请立即使用紧急求助。',
+    tabs: ['情绪倾诉', '压力调节', '人际关系', '睡眠困扰']
   },
   {
     name: '事务办理',
     icon: 'task',
     description: '校园事务',
-    welcome: '你好！我可以帮你办理校园事务。',
-    tabs: ['困难认定', '请假证明', '奖学金', '宿舍问题']
+    welcome: '你好！我可以帮你核验奖助、证明、评优、党团、学籍和教务事项的官方办理要求。',
+    tabs: ['奖助学金', '证明开具', '学籍教务', '评优党团']
   }
 ];
 
-// 危机关键词
-const CRISIS_KEYS = ['不想活','没意思','活着没意思','活着没意义','活着有何意义','伤害自己','伤害自','撑不住','放弃生命','轻生','自杀','不想活了','活不下去','离开这个世界','没有意思'];
+const CRISIS_KEYS = [
+  '想死', '去死', '不想活', '活不下去', '结束生命', '结束自己的生命',
+  '自杀', '轻生', '自残', '自伤', '割腕', '跳楼', '跳河', '跳桥',
+  '上吊', '服毒', '吞药', '伤害自己', '伤害他人', '杀了他', '杀了她',
+  '离开这个世界', '放弃生命', 'suicide', 'killmyself', 'endmylife', 'hurtmyself'
+];
 
-// AI回复逻辑
-function getAIReply(scene, text) {
-  const t = text;
-  if(scene === 0){
-    if(/图书馆|入馆|借阅|自习|座位/.test(t)) return { parts:[
-      { type:'text', text:'图书馆周末 8:00–22:00 开放，凭校园卡入馆、无需预约；考试周延长至 23:00 并增设三楼通宵自习区。' },
-      { type:'source', text:'来源：《合肥师范学院图书馆入馆须知》2024版' } ]};
-    if(/教室|空教室|考研|上课/.test(t)) return { parts:[
-      { type:'text', text:'实时空教室可在教学楼大厅屏幕或教务系统查询；考研自习区分布在图书馆三楼与公共教学楼。' } ]};
-    if(/食堂|吃饭|窗口|夜宵/.test(t)) return { parts:[
-      { type:'text', text:'校区设 3 个学生食堂，支持校园卡与移动支付，早餐 6:30 起、夜宵至 22:30。' } ]};
-    if(/常见|其他问题|还有|问题/.test(t)) return { parts:[
-      { type:'text', text:'常见问题包括：校园卡补办、成绩查询、奖助学金、自习室预约等，想了解哪个我帮你查～' } ]};
-    return { parts:[{ type:'text', text:'我帮你查一下校本资料～稍等，核实后回复你。' }] };
+function getAIReply(scene) {
+  if (scene === 0) {
+    return { parts: [{
+      type: 'text',
+      text: '当前暂时无法核验学校最新的场所与生活信息。请稍后重试，或通过合肥师范学院官网查询对应部门的最新通知。'
+    }] };
   }
-  if(scene === 1){
-    if(/报名|提醒|训练营/.test(t)) return { parts:[
-      { type:'text', text:'已设置每周三 17:30 提醒（课前1天推送）。' },
-      { type:'source', text:'来源：教师教育学院·技能训练营安排' } ]};
-    if(/再想想|再考虑|暂/.test(t)) return { parts:[
-      { type:'text', text:'没关系，按自己的节奏来～想练的时候随时叫我。' } ]};
-    if(/板书|表达|教资|师范|教学/.test(t)) return { parts:[
-      { type:'card', title:'师范生教学基本功提升路径', body:'① 每周2次板书临摹（推荐《灵飞经》）\n② 加入周三晚师范生技能训练营\n③ 对镜/录像做5分钟微课演练\n预计周期：4 周' } ]};
-    return { parts:[{ type:'text', text:'收到～说说你的专业和想提升的方向，我为你定制专属提升路径。' }] };
+  if (scene === 1) {
+    return { parts: [{
+      type: 'text',
+      text: '当前服务暂时不可用。你可以先记录自己的年级、专业、目标和最想解决的一个问题，稍后重试后我会据此提供学业与生涯建议。'
+    }] };
   }
-  if(scene === 2){
-    return { parts:[{ type:'text', text:'我在这里陪着你。愿意多说一点吗？如果现在很难受，随时点「紧急求助」，我都在。', coral:true }] };
+  if (scene === 2) {
+    return { parts: [{
+      type: 'text',
+      coral: true,
+      text: '当前对话服务暂时不可用。如果你正处于危险中，请不要独处，立即联系身边可信任的人，并拨打110、120、12356或0551-63666903寻求现实帮助。'
+    }] };
   }
-  if(scene === 3){
-    if(/预填|申请表|表单/.test(t)) return { parts:[ makeFormPart() ] };
-    if(/稍后|等会|以后/.test(t)) return { parts:[{ type:'text', text:'好的，随时可以回来找我预填。' }] };
-    if(/困难|认定|助学|补助|材料/.test(t)) return { parts:[
-      { type:'card', title:'家庭经济困难认定 · 4 步', body:'① 填《认定申请表》\n② 班级民主评议\n③ 学院审核\n④ 学校公示' } ]};
-    if(/请假|证明|在读|打印/.test(t)) return { parts:[
-      { type:'text', text:'在读证明 / 请假可在「今日校园」→「事务大厅」线上申请，辅导员审批后自助打印。' } ]};
-    return { parts:[{ type:'text', text:'好的，告诉我你想办理的事项，我帮你梳理流程并预填表单。' }] };
+  if (scene === 3) {
+    return { parts: [{
+      type: 'text',
+      text: '当前暂时无法核验学校最新办事要求。请稍后重试，或先查看合肥师范学院官网对应部门发布的正式通知。'
+    }] };
   }
-  return { parts:[{ type:'text', text:'我帮你查一下～' }] };
+  return { parts: [{ type: 'text', text: '当前服务暂时不可用，请稍后重试。' }] };
 }
 
-// 检测危机关键词
 function isCrisis(text) {
-  return CRISIS_KEYS.some(k => text.indexOf(k) !== -1);
+  const normalized = String(text || '').toLowerCase().replace(/\s+/g, '');
+  return CRISIS_KEYS.some(keyword => normalized.includes(keyword));
 }
 
-// 生成表单HTML
-function makeFormPart() {
-  return {
-    type: 'form',
-    html: `
-      <div class="ai-form">
-        <div class="field">
-          <label>姓名</label>
-          <input type="text" placeholder="请输入姓名">
-        </div>
-        <div class="field">
-          <label>学号</label>
-          <input type="text" placeholder="请输入学号">
-        </div>
-        <div class="field">
-          <label>学院</label>
-          <select>
-            <option value="">请选择学院</option>
-            <option value="1">教师教育学院</option>
-            <option value="2">文学院</option>
-            <option value="3">数学与统计学院</option>
-            <option value="4">外国语学院</option>
-          </select>
-        </div>
-        <button class="submit" type="button">提交预填</button>
-      </div>
-    `
-  };
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { CRISIS_KEYS, SCENES, getAIReply, isCrisis };
 }

@@ -1,79 +1,235 @@
-  const http = require('http');
-  const fs = require('fs');
-  const path = require('path');
-  const { agentLoop } = require('./agent');
-  
-  const PORT = 3001;
-  
-  const mimeTypes = {
-  '.html': 'text/html',
-  '.css': 'text/css',
-  '.js': 'application/javascript',
-    '.json': 'application/json',
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.gif': 'image/gif',
-    '.svg': 'image/svg+xml',
-    '.ico': 'image/x-icon',
-    '.mjs': 'application/javascript',
-  };
-  
-  const server = http.createServer((req, res) => {
-    // POST /api/chat —— Agent 对话接口
-    if (req.method === 'POST' && req.url === '/api/chat') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', async () => {
-        try {
-          const { scene, history } = JSON.parse(body);
-          if (typeof scene !== 'number' || !Array.isArray(history)) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: '缺少 scene 或 history 参数' }));
-            return;
-          }
-          console.log(`[API] 场景${scene} 收到 ${history.length} 条历史`);
-          const reply = await agentLoop(scene, history);
-          console.log(`[API] 回复长度: ${reply.length} 字符`);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ reply }));
-        } catch (err) {
-          console.error('[API] 错误:', err.message);
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err.message }));
-        }
-      });
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const { agentLoop } = require('./agent');
+
+const DEFAULT_PORT = 3001;
+const MAX_BODY_BYTES = 256 * 1024;
+const MAX_HISTORY_ITEMS = 20;
+const MAX_MESSAGE_CHARS = 8000;
+const PUBLIC_ROOT = path.resolve(__dirname);
+const PUBLIC_FILES = new Set(['index.html', 'manifest.json']);
+const PUBLIC_DIRECTORIES = ['assets/', 'css/', 'js/'];
+
+const mimeTypes = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+};
+
+class HttpError extends Error {
+  constructor(statusCode, publicMessage) {
+    super(publicMessage);
+    this.statusCode = statusCode;
+    this.publicMessage = publicMessage;
+  }
+}
+
+function setSecurityHeaders(res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+      "script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+  );
+  res.setHeader('Permissions-Policy', 'camera=(), geolocation=(), microphone=(self)');
+}
+
+function getPathname(requestUrl) {
+  try {
+    return decodeURIComponent(new URL(requestUrl, 'http://localhost').pathname);
+  } catch {
+    return null;
+  }
+}
+
+function resolvePublicFile(requestUrl) {
+  const pathname = getPathname(requestUrl);
+  if (!pathname || pathname.includes('\0') || pathname.includes('\\')) return null;
+
+  const relativePath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+  const isAllowed = PUBLIC_FILES.has(relativePath) ||
+    PUBLIC_DIRECTORIES.some(directory => relativePath.startsWith(directory));
+
+  if (!isAllowed || relativePath.split('/').some(part => part === '..' || part.startsWith('.'))) {
+    return null;
+  }
+
+  const absolutePath = path.resolve(PUBLIC_ROOT, relativePath);
+  if (absolutePath !== PUBLIC_ROOT && !absolutePath.startsWith(`${PUBLIC_ROOT}${path.sep}`)) {
+    return null;
+  }
+  return absolutePath;
+}
+
+function validateChatPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new HttpError(400, '请求参数格式错误');
+  }
+
+  const { scene, history } = payload;
+  if (!Number.isInteger(scene) || scene < 0 || scene > 3) {
+    throw new HttpError(400, 'scene必须是0至3之间的整数');
+  }
+  if (!Array.isArray(history) || history.length > MAX_HISTORY_ITEMS) {
+    throw new HttpError(400, `history必须是最多${MAX_HISTORY_ITEMS}条的数组`);
+  }
+
+  const normalizedHistory = history.map((message, index) => {
+    if (!message || typeof message !== 'object' || Array.isArray(message)) {
+      throw new HttpError(400, `history[${index}]格式错误`);
+    }
+    if (message.role !== 'user' && message.role !== 'assistant') {
+      throw new HttpError(400, `history[${index}].role无效`);
+    }
+    if (typeof message.content !== 'string') {
+      throw new HttpError(400, `history[${index}].content必须是字符串`);
+    }
+
+    const content = message.content.trim();
+    if (!content || content.length > MAX_MESSAGE_CHARS) {
+      throw new HttpError(
+        400,
+        `history[${index}].content长度必须在1至${MAX_MESSAGE_CHARS}字符之间`
+      );
+    }
+    return { role: message.role, content };
+  });
+
+  return { scene, history: normalizedHistory };
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let size = 0;
+    let tooLarge = false;
+
+    req.setEncoding('utf8');
+    req.on('data', chunk => {
+      size += Buffer.byteLength(chunk, 'utf8');
+      if (size > MAX_BODY_BYTES) {
+        tooLarge = true;
+        body = '';
+        return;
+      }
+      if (!tooLarge) body += chunk;
+    });
+    req.on('end', () => {
+      if (tooLarge) {
+        reject(new HttpError(413, '请求体过大'));
+        return;
+      }
+      try {
+        resolve(JSON.parse(body));
+      } catch {
+        reject(new HttpError(400, '请求体不是有效的JSON'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function sendJson(res, statusCode, body) {
+  res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(body));
+}
+
+function sendText(res, statusCode, text) {
+  res.writeHead(statusCode, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end(text);
+}
+
+function serveStaticFile(req, res) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    sendText(res, 404, '404 Not Found');
+    return;
+  }
+
+  const filePath = resolvePublicFile(req.url);
+  if (!filePath) {
+    sendText(res, 404, '404 Not Found');
+    return;
+  }
+
+  fs.readFile(filePath, (error, content) => {
+    if (error) {
+      if (error.code !== 'ENOENT') console.error('[Static] 读取失败:', error.message);
+      sendText(res, error.code === 'ENOENT' ? 404 : 500, error.code === 'ENOENT' ? '404 Not Found' : 'Server Error');
       return;
     }
 
-    // 静态文件服务
-    let filePath = req.url === '/' ? '/index.html' : req.url;
-    // 去掉查询参数
-    filePath = filePath.split('?')[0];
-    filePath = path.join(__dirname, filePath);
-    
-    const extname = path.extname(filePath).toLowerCase();
-    const contentType = mimeTypes[extname] || 'application/octet-stream';
-    
-    fs.readFile(filePath, (err, content) => {
-      if (err) {
-        if (err.code === 'ENOENT') {
-          res.writeHead(404);
-          res.end('404 Not Found: ' + filePath);
-        } else {
-          res.writeHead(500);
-          res.end('Server Error: ' + err.code);
+    const contentType = mimeTypes[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+    res.writeHead(200, { 'Content-Type': contentType });
+    res.end(req.method === 'HEAD' ? undefined : content);
+  });
+}
+
+function createAppServer({ agentLoop: runAgent = agentLoop } = {}) {
+  return http.createServer(async (req, res) => {
+    setSecurityHeaders(res);
+    const pathname = getPathname(req.url);
+
+    if (req.method === 'POST' && pathname === '/api/chat') {
+      try {
+        const contentType = req.headers['content-type'] || '';
+        if (!contentType.toLowerCase().startsWith('application/json')) {
+          throw new HttpError(415, '仅支持application/json请求');
         }
-      } else {
-        res.writeHead(200, { 'Content-Type': contentType });
-        // 图片等二进制文件不转 utf-8
-        const isBinary = ['.png', '.jpg', '.jpeg', '.gif', '.ico'].includes(extname);
-        res.end(content, isBinary ? undefined : 'utf-8');
+
+        const payload = await readJsonBody(req);
+        const { scene, history } = validateChatPayload(payload);
+        console.log(`[API] 场景${scene} 收到${history.length}条历史`);
+        const reply = await runAgent(scene, history);
+        if (typeof reply !== 'string' || !reply.trim()) {
+          throw new Error('Agent返回了空回复');
+        }
+        console.log(`[API] 回复长度:${reply.length}字符`);
+        sendJson(res, 200, { reply });
+      } catch (error) {
+        const statusCode = error instanceof HttpError ? error.statusCode : 500;
+        if (statusCode >= 500) console.error(`[API] 内部错误:${error.name || 'Error'}`);
+        const publicMessage = error instanceof HttpError
+          ? error.publicMessage
+          : '服务暂时不可用，请稍后重试';
+        sendJson(res, statusCode, { error: publicMessage });
       }
-    });
+      return;
+    }
+
+    serveStaticFile(req, res);
   });
-  
-  server.listen(PORT, () => {
-    console.log(`爱合师AI辅导员 Agent 运行在: http://localhost:${PORT}`);
-    console.log(`Agent API: POST http://localhost:${PORT}/api/chat`);
-    console.log('按 Ctrl+C 停止服务器');
+}
+
+if (require.main === module) {
+  const configuredPort = Number.parseInt(process.env.PORT || '', 10);
+  const port = Number.isInteger(configuredPort) && configuredPort > 0
+    ? configuredPort
+    : DEFAULT_PORT;
+  const server = createAppServer();
+  server.on('error', error => {
+    console.error('[Server] 启动失败:', error.message);
+    process.exitCode = 1;
   });
+  server.listen(port, () => {
+    console.log(`爱合师AI辅导员Agent运行在:http://localhost:${port}`);
+    console.log(`Agent API:POST http://localhost:${port}/api/chat`);
+    console.log('按Ctrl+C停止服务器');
+  });
+}
+
+module.exports = {
+  createAppServer,
+  resolvePublicFile,
+  validateChatPayload,
+};
