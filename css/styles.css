@@ -612,8 +612,9 @@ body{
 .input-bar{ 
   flex:0 0 auto;
   display:flex; 
+  flex-wrap:wrap;
   align-items:center; 
-  gap:var(--app-space-1); 
+  gap:5px var(--app-space-1);
   padding:10px var(--app-space-3);
   background:var(--canvas); 
   border-top:1px solid var(--border-ultra);
@@ -644,6 +645,17 @@ body{
   background: var(--canvas);
 }
 .input-bar textarea::placeholder{ color:var(--text-muted); }
+.voice-privacy-note {
+  flex:0 0 100%;
+  flex-basis:100%;
+  max-width:100%;
+  margin:0;
+  color:#59615d;
+  font-size:11px;
+  line-height:1.45;
+  overflow-wrap:anywhere;
+}
+
 .voice-input,
 .input-bar .voice, .input-bar .send { 
   flex:0 0 44px; 

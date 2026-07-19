@@ -111,8 +111,9 @@
                 </button>
 
                 <div class="input-bar">
+                    <p id="voiceNotice" class="voice-privacy-note">语音识别由浏览器或系统服务处理，可能需要联网；本应用不保存音频，可用性因浏览器而异。</p>
                     <label for="msgInput" class="sr-only">输入消息</label>
-                    <button id="voiceBtn" class="voice-input" type="button" aria-label="开始语音输入" aria-pressed="false">
+                    <button id="voiceBtn" class="voice-input" type="button" aria-describedby="voiceNotice" aria-label="开始语音输入" aria-pressed="false">
                         <span aria-hidden="true">话</span>
                     </button>
                     <span id="voiceStatus" class="voice-status sr-only" role="status" aria-live="polite"></span>

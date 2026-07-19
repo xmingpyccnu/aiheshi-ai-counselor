@@ -215,3 +215,24 @@ test('语音按钮具备听写状态、禁用态和减少动效适配', () => {
   assert.match(source, /正在听/);
   assert.match(source, /this\.voiceBtn\.disabled\s*=\s*this\.isProcessing/);
 });
+
+test('语音输入附近明示处理方、联网、音频保存与兼容性边界', () => {
+  const html = read('index.html');
+  const notice = html.match(/<p[^>]+id="voiceNotice"[^>]*>([^<]+)<\/p>/);
+  assert.ok(notice, '缺少可见的语音隐私和兼容性说明');
+  assert.match(notice[0], /class="voice-privacy-note"/);
+  assert.doesNotMatch(notice[0], /sr-only|hidden/);
+  assert.match(notice[1], /浏览器或系统服务处理/);
+  assert.match(notice[1], /可能需要联网/);
+  assert.match(notice[1], /本应用不保存音频/);
+  assert.match(notice[1], /可用性因浏览器而异/);
+  assert.match(html, /id="voiceBtn"[^>]+aria-describedby="voiceNotice"/);
+});
+
+test('语音说明在移动输入区低干扰换行且保持可读', () => {
+  const css = read('css/styles.css');
+  assert.match(css, /\.voice-privacy-note\s*\{[\s\S]*?flex-basis:\s*100%/);
+  assert.match(css, /\.voice-privacy-note\s*\{[\s\S]*?max-width:\s*100%/);
+  assert.match(css, /\.voice-privacy-note\s*\{[\s\S]*?font-size:\s*11px/);
+  assert.match(css, /\.voice-privacy-note\s*\{[\s\S]*?overflow-wrap:\s*anywhere/);
+});
