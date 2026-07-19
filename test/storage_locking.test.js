@@ -20,6 +20,10 @@ class MemoryStorage {
   setItem(key, value) {
     this.data.set(key, String(value));
   }
+
+  clear() {
+    this.data.clear();
+  }
 }
 
 class QueuedLockManager {
@@ -76,6 +80,15 @@ function userMessage(index) {
   };
 }
 
+function legacyV2(index = 8) {
+  return {
+    version: 2,
+    profile: { grade: 'senior', major: '旧版专业', goal: '旧版目标' },
+    sessions: { 0: [userMessage(index)], 1: [], 3: [] },
+    sessionRevisions: { 0: 8, 1: 8, 3: 8 },
+  };
+}
+
 test('v3存储与锁名固定，Node不注入lockManager时禁止写入', async () => {
   const storage = new MemoryStorage();
   const store = createLocalStateStore(storage);
@@ -129,6 +142,74 @@ test('v3缺失时在锁内优先迁移v2，有v3后忽略旧版写入', async ()
     sessions: { 0: [userMessage(99)], 1: [], 3: [] },
   }));
   assert.deepEqual(await createLocalStateStore(storage, { lockManager: locks }).load(), migrated);
+});
+
+test('全新store首次无v3时正常迁移v2，之后不再迁移', async () => {
+  const oldState = legacyV2();
+  const storage = new MemoryStorage({ [V2_KEY]: JSON.stringify(oldState) });
+  const store = createLocalStateStore(storage, { lockManager: new QueuedLockManager() });
+
+  const migrated = await store.load();
+
+  assert.deepEqual(migrated.sessions[0], oldState.sessions[0]);
+  assert.deepEqual(migrated.sessionRevisions, oldState.sessionRevisions);
+  assert.equal(JSON.parse(storage.getItem(V3_KEY)).version, 3);
+
+  storage.clear();
+  storage.setItem(V2_KEY, JSON.stringify(legacyV2(99)));
+  const recreated = await store.load();
+  assert.deepEqual(recreated.sessions, { 0: [], 1: [], 3: [] });
+  assert.deepEqual(recreated.sessionRevisions, { 0: 0, 1: 0, 3: 0 });
+});
+
+test('已观察v3后clear与旧v2回写之间的mutation不得复活旧历史', async () => {
+  const storage = new MemoryStorage({ [V3_KEY]: JSON.stringify(defaultState()) });
+  const store = createLocalStateStore(storage, { lockManager: new QueuedLockManager() });
+  await store.load();
+
+  storage.clear();
+  storage.setItem(V2_KEY, JSON.stringify(legacyV2()));
+  const profileResult = await store.saveProfile({
+    grade: 'junior',
+    major: '应用心理学',
+    goal: '实习',
+  });
+
+  assert.equal(profileResult.ok, true);
+  let state = JSON.parse(storage.getItem(V3_KEY));
+  assert.deepEqual(state.sessions, { 0: [], 1: [], 3: [] });
+  assert.deepEqual(state.sessionRevisions, { 0: 0, 1: 0, 3: 0 });
+  assert.equal(state.profile.major, '应用心理学');
+
+  const resetResult = await store.resetAfterExternalClear();
+  assert.equal(resetResult.ok, true);
+  state = resetResult.state;
+  assert.deepEqual(state.sessions, { 0: [], 1: [], 3: [] });
+  assert.deepEqual(state.sessionRevisions, { 0: 0, 1: 0, 3: 0 });
+});
+
+test('reset在等锁前即关闭legacy迁移，已排队load也不重新读v2', async () => {
+  const storage = new MemoryStorage({ [V2_KEY]: JSON.stringify(legacyV2()) });
+  const locks = new QueuedLockManager();
+  locks.holdNext();
+  const blocker = locks.request(LOCK_NAME, { mode: 'exclusive' }, () => ({ ok: true }));
+  await locks.firstHeld;
+  const store = createLocalStateStore(storage, { lockManager: locks });
+
+  const loading = store.load();
+  const resetting = store.resetAfterExternalClear();
+  assert.equal(locks.queue.length, 2);
+  assert.equal(storage.getItem(V3_KEY), null);
+  locks.releaseFirst();
+  await blocker;
+
+  const loaded = await loading;
+  const resetResult = await resetting;
+  assert.deepEqual(loaded.sessions, { 0: [], 1: [], 3: [] });
+  assert.deepEqual(loaded.sessionRevisions, { 0: 0, 1: 0, 3: 0 });
+  assert.equal(resetResult.ok, true);
+  assert.deepEqual(resetResult.state.sessions, { 0: [], 1: [], 3: [] });
+  assert.deepEqual(resetResult.state.sessionRevisions, { 0: 0, 1: 0, 3: 0 });
 });
 
 test('两个store真并发保存同revision时第二个在exclusive锁后冲突', async () => {

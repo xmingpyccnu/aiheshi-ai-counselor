@@ -176,6 +176,7 @@
     const capability = lockingSupported
       ? { safePersistence: true, reason: null }
       : { safePersistence: false, reason: 'locking-unsupported' };
+    let legacyMigrationClosed = false;
 
     function normalizeSession(messages) {
       return cleanMessages(messages);
@@ -218,6 +219,7 @@
       const current = readRaw(STORAGE_KEY);
       if (current.status !== 'valid') return current;
       if (!current.value || current.value.version !== 3) return { status: 'invalid' };
+      legacyMigrationClosed = true;
       return { status: 'valid', state: cleanState(current.value) };
     }
 
@@ -227,7 +229,7 @@
       if (current.status !== 'missing') return failure('unavailable');
 
       let state = defaultState();
-      if (allowLegacy) {
+      if (allowLegacy && !legacyMigrationClosed) {
         const v2 = readRaw(V2_STORAGE_KEY);
         if (v2.status === 'unavailable') return failure('unavailable');
         if (v2.status === 'valid') {
@@ -238,7 +240,9 @@
           if (v1.status === 'valid') state = migrateVersion(v1.value, 1);
         }
       }
-      return write(state) ? { ok: true, state } : failure('unavailable');
+      if (!write(state)) return failure('unavailable');
+      legacyMigrationClosed = true;
+      return { ok: true, state };
     }
 
     async function withExclusiveLock(operation) {
@@ -266,6 +270,7 @@
     }
 
     async function resetAfterExternalClear() {
+      legacyMigrationClosed = true;
       return withExclusiveLock(() => initializeMissingV3Locked({ allowLegacy: false }));
     }
 
