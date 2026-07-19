@@ -9,7 +9,7 @@ const { createLocalStateStore } = require('../js/storage');
 function loadChatApp(fetchImpl = async () => ({
   ok: true,
   json: async () => ({ reply: '回答' }),
-}), documentImpl) {
+}), documentImpl, sandboxOverrides = {}) {
   const source = fs.readFileSync(path.join(__dirname, '..', 'js/chat.js'), 'utf8');
   let confirmCalls = 0;
   const sandbox = {
@@ -36,6 +36,7 @@ function loadChatApp(fetchImpl = async () => ({
     },
   };
   if (documentImpl) sandbox.document = documentImpl;
+  Object.assign(sandbox, sandboxOverrides);
   vm.runInNewContext(`${source}\nthis.ChatApp = ChatApp;`, sandbox);
   return {
     ChatApp: sandbox.ChatApp,
@@ -125,6 +126,16 @@ function createFakeDocument() {
   };
 }
 
+function installRealChatView(app, ChatApp) {
+  app.messageSequence = 0;
+  app.navScene = new FakeElement('div');
+  app.safetyBar = new FakeElement('div');
+  app.fabBtn = new FakeElement('button');
+  app.chatScreen = new FakeElement('main');
+  app.renderCurrentSession = ChatApp.prototype.renderCurrentSession.bind(app);
+  app.scrollBottom = () => {};
+}
+
 function createApp(ChatApp, scene = 0) {
   const app = Object.create(ChatApp.prototype);
   app.currentScene = scene;
@@ -208,8 +219,50 @@ function installRevisionHarness(app, ChatApp) {
 
 function deferredResponse() {
   let resolve;
-  const promise = new Promise(done => { resolve = done; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+async function runStorageConflictRound({ rejectResponse = false } = {}) {
+  const delayed = deferredResponse();
+  const fakeDocument = createFakeDocument();
+  const { ChatApp } = loadChatApp(() => delayed.promise, fakeDocument);
+  const storageData = new Map();
+  const storage = {
+    getItem(key) { return storageData.has(key) ? storageData.get(key) : null; },
+    setItem(key, value) { storageData.set(key, String(value)); },
+  };
+  const firstStore = createLocalStateStore(storage);
+  const secondStore = createLocalStateStore(storage);
+  const initial = firstStore.load();
+  secondStore.load();
+  const app = createApp(ChatApp, 0);
+  app.localStore = firstStore;
+  app.sessionRevisions = { ...initial.sessionRevisions };
+  installRealChatView(app, ChatApp);
+  app.msgInput.value = 'A页面在途问题';
+  let requestTask;
+  const fetchAIReply = ChatApp.prototype.fetchAIReply.bind(app);
+  app.fetchAIReply = (...args) => { requestTask = fetchAIReply(...args); };
+
+  ChatApp.prototype.handleSend.call(app);
+  const afterUser = secondStore.load();
+  const externalSave = secondStore.saveSession(0, [
+    ...afterUser.sessions[0],
+    { who: 'user', id: 'external-round', text: 'B页面推进内容', createdAt: Date.now() },
+  ], afterUser.sessionRevisions[0]);
+  assert.equal(externalSave.ok, true);
+  ChatApp.prototype.handleStorageEvent.call(app, { key: 'aihesh.local.v2' });
+
+  if (rejectResponse) delayed.reject(new Error('offline'));
+  else delayed.resolve({ ok: true, json: async () => ({ reply: '迟到成功回复' }) });
+  await requestTask;
+
+  return { app, stored: secondStore.load() };
 }
 
 test('延迟的心理回复不会因恢复历史而混入普通模块', async () => {
@@ -616,6 +669,26 @@ test('A请求中B普通保存推进revision后A迟到回复不会附到B会话',
   assert.equal(nextSave.revision, externalSave.revision + 1);
 });
 
+test('storage事件先推进请求revision且响应成功时只提示一次冲突', async () => {
+  const { app, stored } = await runStorageConflictRound();
+
+  assert.deepEqual(app.toasts, ['对话已在其他页面更新，请重试']);
+  assert.equal(app.sessions[0].some(message => message.parts?.[0]?.text === '迟到成功回复'), false);
+  assert.doesNotMatch(app.chatScreen.textContent, /迟到成功回复/);
+  assert.equal(stored.sessions[0].some(message => message.parts?.[0]?.text === '迟到成功回复'), false);
+  assert.match(app.chatScreen.textContent, /B页面推进内容/);
+});
+
+test('storage事件先推进请求revision且响应失败时只提示一次冲突', async () => {
+  const { app, stored } = await runStorageConflictRound({ rejectResponse: true });
+
+  assert.deepEqual(app.toasts, ['对话已在其他页面更新，请重试']);
+  assert.equal(app.sessions[0].some(message => message.parts?.[0]?.text === '兜底0'), false);
+  assert.doesNotMatch(app.chatScreen.textContent, /兜底0/);
+  assert.equal(stored.sessions[0].some(message => message.parts?.[0]?.text === '兜底0'), false);
+  assert.match(app.chatScreen.textContent, /B页面推进内容/);
+});
+
 test('用户消息CAS冲突时同步外部状态并取消网络请求', () => {
   const { ChatApp } = loadChatApp();
   const storageData = new Map();
@@ -769,6 +842,162 @@ test('storage事件只响应v2键并保留scene2', () => {
   ChatApp.prototype.handleStorageEvent.call(app, { key: 'aihesh.local.v2' });
   assert.equal(loadCalls, 1);
   assert.equal(app.sessions[2][0].text, '心理私密记录');
+});
+
+test('event.key为null时同步外部clear、重建v2且旧v1不能复活', () => {
+  const { ChatApp } = loadChatApp();
+  const storageData = new Map();
+  const storage = {
+    getItem(key) { return storageData.has(key) ? storageData.get(key) : null; },
+    setItem(key, value) { storageData.set(key, String(value)); },
+  };
+  const store = createLocalStateStore(storage);
+  let state = store.load();
+  store.saveProfile({ grade: 'junior', major: '心理学', goal: '实习' });
+  for (const scene of [0, 1, 3]) {
+    const result = store.saveSession(scene, [{
+      who: 'user', id: `scene-${scene}`, text: `场景${scene}历史`, createdAt: Date.now(),
+    }], state.sessionRevisions[scene]);
+    assert.equal(result.ok, true);
+    state = store.load();
+  }
+  const app = createApp(ChatApp, 0);
+  app.localStore = store;
+  app.profile = state.profile;
+  app.sessions = [state.sessions[0], state.sessions[1], [{
+    who: 'user', id: 'private-clear', text: 'clear后仍保留的scene2', createdAt: Date.now(),
+  }], state.sessions[3]];
+  app.sessionRevisions = { ...state.sessionRevisions };
+  app.renderCalls = 0;
+  app.historyCalls = 0;
+  app.renderCurrentSession = () => { app.renderCalls += 1; };
+  app.renderHistoryList = () => { app.historyCalls += 1; };
+
+  storageData.clear();
+  ChatApp.prototype.handleStorageEvent.call(app, { key: null });
+
+  assert.deepEqual(app.sessions[0], []);
+  assert.deepEqual(app.sessions[1], []);
+  assert.deepEqual(app.sessions[3], []);
+  assert.equal(app.sessions[2][0].text, 'clear后仍保留的scene2');
+  assert.deepEqual(app.profile, { grade: '', major: '', goal: '' });
+  assert.equal(app.renderCalls, 1);
+  assert.equal(app.historyCalls, 1);
+  assert.notEqual(storage.getItem('aihesh.local.v2'), null);
+
+  storage.setItem('aihesh.local.v1', JSON.stringify({
+    version: 1,
+    profile: { grade: 'senior', major: '旧资料', goal: '复活' },
+    sessions: {
+      0: [{ who: 'user', text: '旧v1历史', createdAt: Date.now() }],
+      1: [],
+      3: [],
+    },
+  }));
+  const reloaded = createLocalStateStore(storage).load();
+  assert.deepEqual(reloaded.sessions, { 0: [], 1: [], 3: [] });
+  assert.deepEqual(reloaded.profile, { grade: '', major: '', goal: '' });
+});
+
+test('外部profile变化会重绘成长入口且下一请求使用新profile', async () => {
+  const fakeDocument = createFakeDocument();
+  let requestBody;
+  const getCareerTrack = grade => grade === 'junior'
+    ? { version: '大三版', welcome: '大三成长欢迎', tabs: ['大三实习入口'], topics: [] }
+    : { version: '大一版', welcome: '大一成长欢迎', tabs: ['大一适应入口'], topics: [] };
+  const { ChatApp } = loadChatApp(async (_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return { ok: true, json: async () => ({ reply: '成长回复' }) };
+  }, fakeDocument, { getCareerTrack });
+  const storageData = new Map();
+  const storage = {
+    getItem(key) { return storageData.has(key) ? storageData.get(key) : null; },
+    setItem(key, value) { storageData.set(key, String(value)); },
+  };
+  const firstStore = createLocalStateStore(storage);
+  const secondStore = createLocalStateStore(storage);
+  firstStore.load();
+  firstStore.saveProfile({ grade: 'freshman', major: '心理学', goal: '适应大学' });
+  const initial = firstStore.load();
+  secondStore.load();
+  const app = createApp(ChatApp, 1);
+  app.localStore = firstStore;
+  app.profile = initial.profile;
+  app.sessions = [initial.sessions[0], initial.sessions[1], [], initial.sessions[3]];
+  app.sessionRevisions = { ...initial.sessionRevisions };
+  installRealChatView(app, ChatApp);
+  app.renderCurrentSession();
+  assert.match(app.chatScreen.textContent, /大一适应入口/);
+
+  secondStore.saveProfile({ grade: 'junior', major: '心理学', goal: '准备实习' });
+  ChatApp.prototype.handleStorageEvent.call(app, { key: 'aihesh.local.v2' });
+
+  assert.match(app.chatScreen.textContent, /大三实习入口/);
+  assert.doesNotMatch(app.chatScreen.textContent, /大一适应入口/);
+
+  app.msgInput.value = '下一轮成长问题';
+  let requestTask;
+  const fetchAIReply = ChatApp.prototype.fetchAIReply.bind(app);
+  app.fetchAIReply = (...args) => { requestTask = fetchAIReply(...args); };
+  ChatApp.prototype.handleSend.call(app);
+  await requestTask;
+
+  assert.deepEqual(requestBody.profile, {
+    grade: 'junior', major: '心理学', goal: '准备实习',
+  });
+});
+
+test('处理中的外部profile变化延迟到finally重绘且不重复消息', async () => {
+  const delayed = deferredResponse();
+  const fakeDocument = createFakeDocument();
+  let requestBody;
+  const getCareerTrack = grade => grade === 'junior'
+    ? { version: '大三版', welcome: '大三成长欢迎', tabs: ['大三实习入口'], topics: [] }
+    : { version: '大一版', welcome: '大一成长欢迎', tabs: ['大一适应入口'], topics: [] };
+  const { ChatApp } = loadChatApp((_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return delayed.promise;
+  }, fakeDocument, { getCareerTrack });
+  const storageData = new Map();
+  const storage = {
+    getItem(key) { return storageData.has(key) ? storageData.get(key) : null; },
+    setItem(key, value) { storageData.set(key, String(value)); },
+  };
+  const firstStore = createLocalStateStore(storage);
+  const secondStore = createLocalStateStore(storage);
+  firstStore.load();
+  firstStore.saveProfile({ grade: 'freshman', major: '数学', goal: '适应大学' });
+  const initial = firstStore.load();
+  secondStore.load();
+  const app = createApp(ChatApp, 1);
+  app.localStore = firstStore;
+  app.profile = initial.profile;
+  app.sessions = [initial.sessions[0], initial.sessions[1], [], initial.sessions[3]];
+  app.sessionRevisions = { ...initial.sessionRevisions };
+  installRealChatView(app, ChatApp);
+  app.renderCurrentSession();
+  app.msgInput.value = '处理中成长问题';
+  let requestTask;
+  const fetchAIReply = ChatApp.prototype.fetchAIReply.bind(app);
+  app.fetchAIReply = (...args) => { requestTask = fetchAIReply(...args); };
+
+  ChatApp.prototype.handleSend.call(app);
+  secondStore.load();
+  secondStore.saveProfile({ grade: 'junior', major: '数学', goal: '准备实习' });
+  ChatApp.prototype.handleStorageEvent.call(app, { key: 'aihesh.local.v2' });
+
+  assert.match(app.chatScreen.textContent, /大一适应入口/);
+  assert.doesNotMatch(app.chatScreen.textContent, /大三实习入口/);
+  assert.equal(requestBody.profile.grade, 'freshman');
+
+  delayed.resolve({ ok: true, json: async () => ({ reply: '本轮成长回复' }) });
+  await requestTask;
+
+  const finalText = app.chatScreen.textContent;
+  assert.match(finalText, /大三实习入口/);
+  assert.doesNotMatch(finalText, /大一适应入口/);
+  assert.equal((finalText.match(/处理中成长问题/g) || []).length, 1);
+  assert.equal((finalText.match(/本轮成长回复/g) || []).length, 1);
 });
 
 test('请求前裁掉第41条历史时重绘当前DOM以匹配40条内存', async () => {

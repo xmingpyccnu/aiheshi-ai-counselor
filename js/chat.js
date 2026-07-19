@@ -16,6 +16,11 @@ class ChatApp {
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
     this.roundNetworkMessage = '';
+    this.roundConflict = false;
+    this.roundSequence = 0;
+    this.currentRound = 0;
+    this.activeRequest = null;
+    this.pendingProfileRender = false;
     this.lastPersistenceResult = null;
     this.init();
   }
@@ -471,9 +476,13 @@ class ChatApp {
 
   beginProcessing() {
     this.isProcessing = true;
+    this.roundSequence = (Number.isSafeInteger(this.roundSequence) ? this.roundSequence : 0) + 1;
+    this.currentRound = this.roundSequence;
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
     this.roundNetworkMessage = '';
+    this.roundConflict = false;
+    this.activeRequest = null;
     this.lastPersistenceResult = null;
     this.sendBtn.disabled = true;
     this.msgInput.disabled = true;
@@ -484,6 +493,11 @@ class ChatApp {
     const requestRevision = Number.isSafeInteger(options.revision)
       ? options.revision
       : this.getSceneRevision(requestScene);
+    this.activeRequest = {
+      scene: requestScene,
+      revision: requestRevision,
+      round: this.currentRound,
+    };
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 75000);
     try {
@@ -548,6 +562,8 @@ class ChatApp {
       clearTimeout(timeout);
       this.finishProcessingRound();
       this.resetProcessingState();
+      this.activeRequest = null;
+      this.flushPendingProfileRender();
     }
   }
 
@@ -595,6 +611,8 @@ class ChatApp {
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
     this.roundNetworkMessage = '';
+    this.roundConflict = false;
+    this.activeRequest = null;
     this.toast('对话已在其他页面更新，请重试');
     this.resetProcessingState();
   }
@@ -607,7 +625,7 @@ class ChatApp {
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
     this.roundNetworkMessage = '';
-    this.toast('对话已在其他页面更新，请重试');
+    this.roundConflict = true;
     return true;
   }
 
@@ -626,7 +644,9 @@ class ChatApp {
 
   finishProcessingRound() {
     let message = '';
-    if (this.roundNetworkFailed) {
+    if (this.roundConflict) {
+      message = '对话已在其他页面更新，请重试';
+    } else if (this.roundNetworkFailed) {
       message = this.roundNetworkMessage;
       if (this.roundSaveFailed) message += '；当前对话未保存';
     } else if (this.roundSaveFailed) {
@@ -636,6 +656,7 @@ class ChatApp {
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
     this.roundNetworkMessage = '';
+    this.roundConflict = false;
   }
 
   resetProcessingState() {
@@ -780,7 +801,8 @@ class ChatApp {
   }
 
   handleStorageEvent(event) {
-    if (event.key !== this.localStore.storageKey) return;
+    const isExternalClear = event.key === null;
+    if (!isExternalClear && event.key !== this.localStore.storageKey) return;
 
     const previousProfile = JSON.stringify(this.profile);
     const previousSessions = {
@@ -789,21 +811,65 @@ class ChatApp {
       3: JSON.stringify(this.sessions[3]),
     };
     const previousRevisions = { ...this.sessionRevisions };
+    // load() also recreates an empty v2 record after another page calls
+    // localStorage.clear(); this document will not receive an event for its own write.
     const localState = this.localStore.load();
+    const profileChanged = previousProfile !== JSON.stringify(localState.profile);
     const changedScenes = [0, 1, 3].filter(sceneIndex => (
       previousSessions[sceneIndex] !== JSON.stringify(localState.sessions[sceneIndex])
       || previousRevisions[sceneIndex] !== localState.sessionRevisions[sceneIndex]
     ));
 
+    if (
+      this.isProcessing
+      && this.activeRequest
+      && this.activeRequest.round === this.currentRound
+      && this.activeRequest.scene !== 2
+      && this.activeRequest.revision !== localState.sessionRevisions[this.activeRequest.scene]
+    ) {
+      this.roundConflict = true;
+      this.roundSaveFailed = false;
+      this.roundNetworkFailed = false;
+      this.roundNetworkMessage = '';
+    }
+
     this.applyLocalState(localState);
 
-    if (this.currentScene !== 2 && changedScenes.includes(this.currentScene)) {
+    let renderedCurrentSession = false;
+    const shouldDeferGrowthRender = profileChanged
+      && this.isProcessing
+      && this.currentScene === 1
+      && this.currentView === 'chat';
+    if (
+      this.currentScene !== 2
+      && changedScenes.includes(this.currentScene)
+      && !shouldDeferGrowthRender
+    ) {
       this.renderCurrentSession();
+      renderedCurrentSession = true;
     }
+    if (profileChanged && this.currentScene === 1 && this.currentView === 'chat') {
+      if (this.isProcessing && !renderedCurrentSession) {
+        this.pendingProfileRender = true;
+      } else if (!renderedCurrentSession) {
+        this.renderCurrentSession();
+        renderedCurrentSession = true;
+      }
+    }
+    if (profileChanged) this.renderProfileForm();
     if (this.currentView === 'profile') {
-      if (previousProfile !== JSON.stringify(this.profile)) this.renderProfileForm();
       this.updateProfileStats();
       this.renderHistoryList();
+    } else if (isExternalClear) {
+      this.renderHistoryList();
+    }
+  }
+
+  flushPendingProfileRender() {
+    if (!this.pendingProfileRender) return;
+    this.pendingProfileRender = false;
+    if (this.currentScene === 1 && this.currentView === 'chat') {
+      this.renderCurrentSession();
     }
   }
 
