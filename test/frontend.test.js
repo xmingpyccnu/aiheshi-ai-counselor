@@ -212,44 +212,48 @@ test('输入区提供可降级的语音转文字', () => {
 });
 
 test('语音按钮具备听写状态、禁用态和减少动效适配', () => {
+  const html = read('index.html');
   const css = read('css/styles.css');
   const source = read('js/chat.js');
   const listeningRule = css.match(/\.voice-input\.listening\s*\{([^}]+)\}/);
+  assert.match(html, /id="voiceBtn"[\s\S]*?<span[^>]*>语音<\/span>/);
   assert.match(css, /\.voice-input\b/);
   assert.match(css, /\.voice-input\.listening\b/);
   assert.match(css, /\.voice-input:disabled\b/);
   assert.match(source, /aria-pressed/);
   assert.match(source, /正在听/);
+  assert.match(source, /listening\s*\?\s*'停止'\s*:\s*'语音'/);
   assert.match(source, /this\.voiceBtn\.disabled\s*=\s*this\.isProcessing/);
   assert.ok(listeningRule);
   assert.match(listeningRule[1], /animation:/);
   assert.doesNotMatch(listeningRule[1], /infinite/);
 });
 
-test('语音输入附近明示处理方、联网、音频保存与兼容性边界', () => {
+test('语音输入附近用简短文案明示处理方、联网与音频保存边界', () => {
   const html = read('index.html');
   const notice = html.match(/<p[^>]+id="voiceNotice"[^>]*>([^<]+)<\/p>/);
   assert.ok(notice, '缺少可见的语音隐私和兼容性说明');
   assert.match(notice[0], /class="voice-privacy-note"/);
   assert.doesNotMatch(notice[0], /sr-only|hidden/);
   assert.match(notice[1], /浏览器或系统服务处理/);
-  assert.match(notice[1], /可能需要联网/);
+  assert.match(notice[1], /可能联网/);
   assert.match(notice[1], /本应用不保存音频/);
-  assert.match(notice[1], /可用性因浏览器而异/);
+  assert.ok(notice[1].length <= 30, '语音说明应保持单行简短');
   assert.match(html, /id="voiceBtn"[^>]+aria-describedby="[^"]*voiceNotice[^"]*"/);
 });
 
 test('语音说明在移动输入区低干扰换行且保持可读', () => {
   const css = read('css/styles.css');
-  assert.match(css, /\.voice-privacy-note\s*\{[\s\S]*?flex-basis:\s*100%/);
+  assert.match(css, /\.voice-privacy-note\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1/);
   assert.match(css, /\.voice-privacy-note\s*\{[\s\S]*?max-width:\s*100%/);
   assert.match(css, /\.voice-privacy-note\s*\{[\s\S]*?font-size:\s*11px/);
-  assert.match(css, /\.voice-privacy-note\s*\{[\s\S]*?overflow-wrap:\s*anywhere/);
+  assert.match(css, /\.voice-privacy-note\s*\{[\s\S]*?text-overflow:\s*ellipsis/);
 });
 
-test('语音不支持提示可见、可关联且在375px低干扰换行', () => {
+test('语音不支持提示精简且不参与输入行布局', () => {
   const html = read('index.html');
   const css = read('css/styles.css');
+  const source = read('js/chat.js');
   const status = html.match(/<span[^>]+id="voiceStatus"[^>]*>/)?.[0] || '';
   const button = html.match(/<button[^>]+id="voiceBtn"[^>]*>/)?.[0] || '';
 
@@ -258,5 +262,12 @@ test('语音不支持提示可见、可关联且在375px低干扰换行', () => 
   assert.match(status, /aria-live="polite"/);
   assert.match(button, /aria-describedby="[^"]*voiceStatus[^"]*"/);
   assert.match(css, /\.voice-status:empty\s*\{[\s\S]*?display:\s*none/);
-  assert.match(css, /@media\s*\(max-width:\s*375px\)[\s\S]*?\.voice-status\s*\{[\s\S]*?flex-basis:\s*100%/);
+  assert.match(css, /\.input-bar\s*\{[\s\S]*?display:\s*grid/);
+  assert.match(css, /\.input-bar\s*\{[\s\S]*?grid-template-columns:\s*44px\s+minmax\(0,\s*1fr\)\s+44px/);
+  assert.match(css, /\.input-bar textarea\s*\{[\s\S]*?min-width:\s*0/);
+  assert.match(css, /\.voice-status\s*\{[\s\S]*?position:\s*absolute/);
+  assert.match(css, /\.voice-status\s*\{[\s\S]*?top:\s*10px/);
+  assert.match(css, /\.voice-status\s*\{[\s\S]*?bottom:\s*auto/);
+  assert.match(source, /不支持语音，请使用文字输入/);
+  assert.doesNotMatch(source, /当前浏览器不支持语音转文字，可继续使用文本输入。/);
 });

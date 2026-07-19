@@ -319,7 +319,7 @@ test('不支持语音API时禁用按钮并保留文本输入说明', () => {
   assert.equal(app.voiceController.supported, false);
   assert.equal(app.voiceBtn.disabled, true);
   assert.match(app.voiceBtn.title, /不支持/);
-  assert.match(app.voiceStatus.textContent, /可继续使用文本输入/);
+  assert.equal(app.voiceStatus.textContent, '不支持语音，请使用文字输入');
 });
 
 test('转写只进输入框且不自动发送', () => {
@@ -452,12 +452,12 @@ test('听写与空闲状态同步更新按钮语义和状态文字', () => {
   ChatApp.prototype.updateVoiceState.call(app, 'listening');
   assert.equal(app.voiceBtn['aria-pressed'], 'true');
   assert.equal(app.voiceBtn['aria-label'], '停止语音输入');
-  assert.equal(app.voiceLabel.textContent, '停');
+  assert.equal(app.voiceLabel.textContent, '停止');
   assert.match(app.voiceStatus.textContent, /正在听/);
 
   ChatApp.prototype.updateVoiceState.call(app, 'idle');
   assert.equal(app.voiceBtn['aria-pressed'], 'false');
   assert.equal(app.voiceBtn['aria-label'], '开始语音输入');
-  assert.equal(app.voiceLabel.textContent, '话');
+  assert.equal(app.voiceLabel.textContent, '语音');
   assert.match(app.voiceStatus.textContent, /已停止/);
 });

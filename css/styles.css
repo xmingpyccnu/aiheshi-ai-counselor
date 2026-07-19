@@ -611,8 +611,9 @@ body{
 /* ===== 输入栏 ===== */
 .input-bar{ 
   flex:0 0 auto;
-  display:flex; 
-  flex-wrap:wrap;
+  position:relative;
+  display:grid;
+  grid-template-columns:44px minmax(0, 1fr) 44px;
   align-items:center; 
   gap:5px var(--app-space-1);
   padding:10px var(--app-space-3);
@@ -622,7 +623,10 @@ body{
   padding-bottom: max(10px, var(--safe-area-bottom));
 }
 .input-bar textarea{ 
-  flex:1; 
+  grid-column:2;
+  grid-row:2;
+  width:100%;
+  min-width:0;
   min-height:44px;
   max-height:120px;
   border:1px solid var(--border-ultra); 
@@ -646,14 +650,17 @@ body{
 }
 .input-bar textarea::placeholder{ color:var(--text-muted); }
 .voice-privacy-note {
-  flex:0 0 100%;
-  flex-basis:100%;
+  grid-column:1 / -1;
+  grid-row:1;
   max-width:100%;
+  min-width:0;
   margin:0;
   color:#59615d;
   font-size:11px;
   line-height:1.45;
-  overflow-wrap:anywhere;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
 }
 
 .voice-input,
@@ -696,6 +703,8 @@ body{
 
 .voice-input {
   display:grid;
+  grid-column:1;
+  grid-row:2;
   flex:0 0 44px;
   place-items:center;
   width:44px;
@@ -725,24 +734,27 @@ body{
 }
 
 .voice-status {
-  flex:0 1 auto;
-  max-width:100%;
+  position:absolute;
+  z-index:2;
+  top:10px;
+  right:12px;
+  bottom:auto;
+  left:12px;
+  max-width:calc(100% - 24px);
+  padding:0;
   color:#59615d;
+  background:#fffdf8;
+  border:0;
   font-size:11px;
-  line-height:1.4;
-  overflow-wrap:anywhere;
+  line-height:1.45;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  pointer-events:none;
 }
 
 .voice-status:empty {
   display:none;
-}
-
-@media (max-width: 375px) {
-  .voice-status {
-    flex:0 0 100%;
-    flex-basis:100%;
-    padding-left:52px;
-  }
 }
 
 @keyframes voicePulse {
@@ -1552,6 +1564,8 @@ button {
 }
 
 .chat-view .input-bar .send {
+  grid-column:3;
+  grid-row:2;
   background:var(--desk-teal);
 }
 

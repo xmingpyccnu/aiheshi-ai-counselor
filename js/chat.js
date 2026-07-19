@@ -719,8 +719,8 @@ class ChatApp {
 
     if (!this.voiceController.supported) {
       this.voiceBtn.disabled = true;
-      this.voiceBtn.title = '当前浏览器不支持语音转文字';
-      this.voiceStatus.textContent = '当前浏览器不支持语音转文字，可继续使用文本输入。';
+      this.voiceBtn.title = '不支持语音，请使用文字输入';
+      this.voiceStatus.textContent = '不支持语音，请使用文字输入';
     }
 
     this.voiceBtn.addEventListener('click', () => {
@@ -758,7 +758,7 @@ class ChatApp {
     this.voiceBtn.classList.toggle('listening', listening);
     this.voiceBtn.setAttribute('aria-pressed', String(listening));
     this.voiceBtn.setAttribute('aria-label', listening ? '停止语音输入' : '开始语音输入');
-    if (this.voiceLabel) this.voiceLabel.textContent = listening ? '停' : '话';
+    if (this.voiceLabel) this.voiceLabel.textContent = listening ? '停止' : '语音';
     this.voiceStatus.textContent = listening
       ? '正在听……再次点击停止'
       : '语音输入已停止';
