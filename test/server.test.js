@@ -46,7 +46,7 @@ test('静态响应包含基础安全响应头', async () => {
   });
 });
 
-test('聊天接口接受结构化历史并调用Agent', async () => {
+test('聊天接口接受结构化历史并以null资料调用Agent', async () => {
   let received;
   await withServer(async baseUrl => {
     const response = await postChat(baseUrl, {
@@ -55,14 +55,87 @@ test('聊天接口接受结构化历史并调用Agent', async () => {
     });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { reply: '测试回复' });
-  }, async (scene, history) => {
-    received = { scene, history };
+  }, async (scene, history, profile) => {
+    received = { scene, history, profile };
     return '测试回复';
   });
 
   assert.deepEqual(received, {
     scene: 1,
     history: [{ role: 'user', content: '如何准备教资考试？' }],
+    profile: null,
+  });
+});
+
+test('成长场景将合法学生资料完整传给Agent', async () => {
+  let received;
+  const profile = {
+    grade: 'junior',
+    major: '应用心理学',
+    goal: '寻找实习',
+  };
+
+  await withServer(async baseUrl => {
+    const response = await postChat(baseUrl, {
+      scene: 1,
+      history: [{ role: 'user', content: '请给我一些生涯规划建议' }],
+      profile,
+    });
+    assert.equal(response.status, 200);
+  }, async (scene, history, receivedProfile) => {
+    received = { scene, history, profile: receivedProfile };
+    return '测试回复';
+  });
+
+  assert.deepEqual(received, {
+    scene: 1,
+    history: [{ role: 'user', content: '请给我一些生涯规划建议' }],
+    profile,
+  });
+});
+
+test('非成长场景忽略合法学生资料', async () => {
+  const receivedProfiles = [];
+
+  await withServer(async baseUrl => {
+    for (const scene of [0, 2]) {
+      const response = await postChat(baseUrl, {
+        scene,
+        history: [{ role: 'user', content: '测试问题' }],
+        profile: { grade: 'senior', major: '心理学', goal: '考研' },
+      });
+      assert.equal(response.status, 200);
+    }
+  }, async (scene, history, profile) => {
+    receivedProfiles.push(profile);
+    return '测试回复';
+  });
+
+  assert.deepEqual(receivedProfiles, [null, null]);
+});
+
+test('拒绝非法学生资料且不泄露内部信息', async () => {
+  const invalidProfiles = [
+    { grade: 'graduate', major: '', goal: '' },
+    { grade: 'freshman', major: 'x'.repeat(41), goal: '' },
+    { grade: 'freshman', major: '', goal: 'x'.repeat(121) },
+    { grade: 3, major: '', goal: '' },
+    { grade: '', major: ['心理学'], goal: '' },
+    { grade: '', major: '', goal: false },
+    [],
+    null,
+  ];
+
+  await withServer(async baseUrl => {
+    for (const profile of invalidProfiles) {
+      const response = await postChat(baseUrl, {
+        scene: 1,
+        history: [{ role: 'user', content: '测试问题' }],
+        profile,
+      });
+      assert.equal(response.status, 400);
+      assert.deepEqual(await response.json(), { error: '请求参数格式错误' });
+    }
   });
 });
 

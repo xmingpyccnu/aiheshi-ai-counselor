@@ -18,6 +18,12 @@ const SPARK_CONFIG = {
 const MAX_ROUNDS = 7;
 const API_TIMEOUT_MS = 60000;
 const HANDBOOK_TOPIC_PATTERN = /学生管理|学籍|教务|教学管理|奖学金|助学金|奖助|资助|困难认定|评奖|评优|处分|违纪|宿舍|公寓|安全管理|素质拓展|第二课堂|团务|团籍|党员|入党|转专业|休学|复学|退学|毕业|学位|课程|考试|补考|重修|借书|图书馆|请假|申诉|勤工助学|创新创业/;
+const GRADE_LABELS = {
+  freshman: '大一',
+  sophomore: '大二',
+  junior: '大三',
+  senior: '大四',
+};
 
 function generateAuthUrl() {
   const missing = ['SPARK_APP_ID', 'SPARK_API_KEY', 'SPARK_API_SECRET']
@@ -121,9 +127,19 @@ function shouldPrefetchHandbook(scene, query) {
   return scene === 3 || HANDBOOK_TOPIC_PATTERN.test(query);
 }
 
-function prepareMessages(scene, history) {
-  const systemPrompt = SCENE_PROMPTS[scene];
+function prepareMessages(scene, history, profile = null) {
+  let systemPrompt = SCENE_PROMPTS[scene];
   if (!systemPrompt) throw new Error(`未知场景:${scene}`);
+
+  if (scene === 1 && profile !== null) {
+    const gradeLabel = GRADE_LABELS[profile.grade] || '未设置';
+    systemPrompt +=
+      '\n\n## 学生主动设置的当前资料\n' +
+      `年级:${gradeLabel}\n` +
+      `专业:${profile.major || '未设置'}\n` +
+      `当前目标:${profile.goal || '未设置'}\n` +
+      '这些资料只用于当次学业与生涯建议；资料不完整时应先询问，不得猜测。';
+  }
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -152,8 +168,8 @@ function prepareMessages(scene, history) {
   return messages;
 }
 
-async function agentLoop(scene, history) {
-  const messages = prepareMessages(scene, history);
+async function agentLoop(scene, history, profile = null) {
+  const messages = prepareMessages(scene, history, profile);
 
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
     console.log(`[Agent] 第${round + 1}/${MAX_ROUNDS}轮，消息数:${messages.length}`);
