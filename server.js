@@ -132,16 +132,30 @@ function validateProfile(value) {
     return { ok: false, profile: null };
   }
 
-  const normalizedMajor = major.trim();
-  const normalizedGoal = goal.trim();
-  if (normalizedMajor.length > 40 || normalizedGoal.length > 120) {
+  const trimmedMajor = major.trim();
+  const trimmedGoal = goal.trim();
+  if (trimmedMajor.length > 40 || trimmedGoal.length > 120) {
     return { ok: false, profile: null };
   }
 
   return {
     ok: true,
-    profile: { grade, major: normalizedMajor, goal: normalizedGoal },
+    profile: {
+      grade,
+      major: normalizeProfileText(trimmedMajor),
+      goal: normalizeProfileText(trimmedGoal),
+    },
   };
+}
+
+function normalizeProfileText(value) {
+  return value
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
+    .replace(/[\u202A-\u202E\u2066-\u2069]/g, '')
+    .replace(/</g, '＜')
+    .replace(/>/g, '＞')
+    .replace(/\s+/gu, ' ')
+    .trim();
 }
 
 function readJsonBody(req) {
