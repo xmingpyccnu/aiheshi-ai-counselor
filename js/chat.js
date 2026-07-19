@@ -716,9 +716,18 @@ class ChatApp {
     if (this.currentView !== 'chat' || this.isProcessing) return;
     const transcript = String(text || '').trim();
     if (!transcript) return;
-    const existing = this.msgInput.value.slice(0, 8_000);
-    const available = 8_000 - existing.length;
-    if (available <= 0) return;
+    const configuredLimit = Number(this.msgInput.maxLength);
+    const inputLimit = Number.isSafeInteger(configuredLimit) && configuredLimit > 0
+      ? Math.min(configuredLimit, 8_000)
+      : 8_000;
+    const existing = this.msgInput.value;
+    const available = inputLimit - existing.length;
+    const minimumAddition = existing ? 2 : 1;
+    if (available < minimumAddition) {
+      this.msgInput.focus();
+      this.toast('输入内容已达上限，请先精简后再使用语音输入');
+      return;
+    }
     const addition = `${existing ? '，' : ''}${transcript}`.slice(0, available);
     this.msgInput.value = existing + addition;
     this.updateComposer();

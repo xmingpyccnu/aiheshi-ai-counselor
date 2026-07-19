@@ -42,7 +42,7 @@ test('语音识别使用中文、单次且非中间结果', () => {
   assert.equal(instances[0].interimResults, false);
 });
 
-test('识别结果拼接后只交给输入回调，空结果不回调', () => {
+test('单一识别结果仅在正常结束时交付一次，空结果不交付', () => {
   let instance;
   class FakeRecognition {
     constructor() { instance = this; }
@@ -59,9 +59,77 @@ test('识别结果拼接后只交给输入回调，空结果不回调', () => {
 
   controller.start();
   instance.onresult({ results: [[{ transcript: ' 我想咨询' }], [{ transcript: '转专业 ' }]] });
-  instance.onresult({ results: [[{ transcript: '   ' }], []] });
-
+  assert.deepEqual(transcripts, []);
+  instance.onend();
   assert.deepEqual(transcripts, ['我想咨询转专业']);
+
+  controller.start();
+  instance.onresult({ results: [[{ transcript: '   ' }], []] });
+  instance.onend();
+  assert.deepEqual(transcripts, ['我想咨询转专业']);
+});
+
+test('同一识别轮按resultIndex累计最终结果且onend只交付完整文本一次', () => {
+  let instance;
+  class FakeRecognition {
+    constructor() { instance = this; }
+    start() { this.onstart?.(); }
+    stop() { this.onend?.(); }
+  }
+  const transcripts = [];
+  const controller = createVoiceController({
+    root: { SpeechRecognition: FakeRecognition },
+    onTranscript: text => transcripts.push(text),
+    onState() {},
+    onError() {},
+  });
+
+  controller.start();
+  instance.onresult({
+    resultIndex: 0,
+    results: { 0: { 0: { transcript: '我想' }, length: 1, isFinal: true }, length: 1 },
+  });
+  instance.onresult({
+    resultIndex: 1,
+    results: {
+      0: { 0: { transcript: '我想' }, length: 1, isFinal: true },
+      1: { 0: { transcript: '咨询转专业' }, length: 1, isFinal: true },
+      length: 2,
+    },
+  });
+
+  assert.deepEqual(transcripts, []);
+  instance.onend();
+  instance.onend();
+  assert.deepEqual(transcripts, ['我想咨询转专业']);
+});
+
+test('识别错误或取消后不交付已缓冲文本', () => {
+  const instances = [];
+  class FakeRecognition {
+    constructor() { instances.push(this); }
+    start() { this.onstart?.(); }
+    abort() {}
+  }
+  const transcripts = [];
+  const controller = createVoiceController({
+    root: { SpeechRecognition: FakeRecognition },
+    onTranscript: text => transcripts.push(text),
+    onState() {},
+    onError() {},
+  });
+
+  controller.start();
+  instances[0].onresult({ results: [[{ transcript: '错误前文本' }]] });
+  instances[0].onerror({ error: 'network' });
+  instances[0].onend();
+
+  controller.start();
+  instances[1].onresult({ results: [[{ transcript: '取消前文本' }]] });
+  controller.cancel();
+  instances[1].onend();
+
+  assert.deepEqual(transcripts, []);
 });
 
 test('语音错误返回可操作的中文提示', () => {
@@ -169,6 +237,7 @@ test('取消后作废迟到结果，新一轮使用独立识别实例', () => {
   const active = instances[1];
   stale.onresult({ results: [[{ transcript: '迟到内容' }]] });
   active.onresult({ results: [[{ transcript: '新一轮内容' }]] });
+  active.onend();
 
   assert.deepEqual(transcripts, ['新一轮内容']);
 });
@@ -208,6 +277,7 @@ function createChatApp(ChatApp) {
   app.roundSequence = 0;
   app.msgInput = {
     value: '',
+    maxLength: 8_000,
     disabled: false,
     scrollHeight: 40,
     style: {},
@@ -265,7 +335,7 @@ test('转写只进输入框且不自动发送', () => {
   assert.match(app.toasts[0], /请确认后发送/);
 });
 
-test('转写合并严格限制8000字且不删除已有输入', () => {
+test('非空输入剩两字容量时追加分隔符和一个转写字符', () => {
   const { ChatApp } = loadChatApp({});
   const app = createChatApp(ChatApp);
   const existing = '已'.repeat(7_998);
@@ -274,7 +344,34 @@ test('转写合并严格限制8000字且不删除已有输入', () => {
   ChatApp.prototype.acceptVoiceTranscript.call(app, '语音内容');
 
   assert.equal(app.msgInput.value.length, 8_000);
-  assert.equal(app.msgInput.value.slice(0, existing.length), existing);
+  assert.equal(app.msgInput.value, `${existing}，语`);
+  assert.match(app.toasts[0], /请确认后发送/);
+  assert.equal(app.fetchCalls, 0);
+});
+
+test('非空输入只剩一字容量时不单独追加分隔符', () => {
+  const { ChatApp } = loadChatApp({});
+  const app = createChatApp(ChatApp);
+  const existing = '已'.repeat(7_999);
+  app.msgInput.value = existing;
+
+  ChatApp.prototype.acceptVoiceTranscript.call(app, '语音内容');
+
+  assert.equal(app.msgInput.value, existing);
+  assert.match(app.toasts[0], /已达上限/);
+  assert.equal(app.fetchCalls, 0);
+});
+
+test('空输入在maxlength只剩一字时可输入一个转写字符', () => {
+  const { ChatApp } = loadChatApp({});
+  const app = createChatApp(ChatApp);
+  app.msgInput.maxLength = 1;
+
+  ChatApp.prototype.acceptVoiceTranscript.call(app, '语音内容');
+
+  assert.equal(app.msgInput.value, '语');
+  assert.match(app.toasts[0], /请确认后发送/);
+  assert.equal(app.fetchCalls, 0);
 });
 
 test('发送时停止并作废本轮听写，迟到转写不污染新输入', () => {
@@ -293,6 +390,7 @@ test('发送时停止并作废本轮听写，迟到转写不污染新输入', ()
   ChatApp.prototype.handleSend.call(app);
   app.msgInput.value = '新一轮手动输入';
   instances[0].onresult({ results: [[{ transcript: '迟到语音' }]] });
+  instances[0].onend();
 
   assert.equal(app.fetchCalls, 1);
   assert.equal(app.msgInput.value, '新一轮手动输入');
@@ -319,12 +417,14 @@ test('切换场景和离开对话均作废迟到转写', () => {
   const sceneResult = instances[0];
   ChatApp.prototype.switchScene.call(app, 1);
   sceneResult.onresult({ results: [[{ transcript: '场景迟到' }]] });
+  sceneResult.onend();
   assert.equal(app.msgInput.value, '');
 
   app.voiceController.start();
   const viewResult = instances[1];
   ChatApp.prototype.navigateTo.call(app, 'home');
   viewResult.onresult({ results: [[{ transcript: '页面迟到' }]] });
+  viewResult.onend();
   assert.equal(app.msgInput.value, '');
 });
 

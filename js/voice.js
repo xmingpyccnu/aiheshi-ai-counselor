@@ -37,10 +37,17 @@ function createVoiceController({
     onState(nextState);
   };
 
-  const finish = token => {
-    if (token !== generation) return;
+  const finish = (token, deliverTranscript = false) => {
+    if (token !== generation || active?.token !== token) return;
+    const transcript = deliverTranscript
+      ? active.transcriptParts.join('').trim()
+      : '';
     active = null;
-    emitState('idle');
+    try {
+      if (transcript) onTranscript(transcript);
+    } finally {
+      emitState('idle');
+    }
   };
 
   const start = () => {
@@ -53,7 +60,7 @@ function createVoiceController({
       recognition.lang = 'zh-CN';
       recognition.interimResults = false;
       recognition.continuous = false;
-      active = { token, recognition, stopRequested: false };
+      active = { token, recognition, stopRequested: false, transcriptParts: [] };
 
       recognition.onstart = () => {
         if (token !== generation || active?.token !== token) return;
@@ -61,18 +68,33 @@ function createVoiceController({
       };
       recognition.onresult = event => {
         if (token !== generation || active?.token !== token) return;
-        const transcript = Array.from(event?.results || [])
-          .map(result => result?.[0]?.transcript || '')
-          .join('')
-          .trim();
-        if (transcript) onTranscript(transcript);
+        const results = event?.results;
+        const rawLength = Number(results?.length);
+        const length = Number.isSafeInteger(rawLength) && rawLength > 0
+          ? Math.min(rawLength, 256)
+          : 0;
+        const rawStart = Number(event?.resultIndex);
+        const startIndex = Number.isSafeInteger(rawStart) && rawStart >= 0
+          ? Math.min(rawStart, length)
+          : 0;
+
+        for (let index = startIndex; index < length; index += 1) {
+          const result = results[index] ?? results.item?.(index);
+          if (!result || result.isFinal === false) continue;
+          const alternative = result[0] ?? result.item?.(0);
+          active.transcriptParts[index] = String(alternative?.transcript || '');
+        }
       };
       recognition.onerror = event => {
         if (token !== generation || active?.token !== token) return;
-        onError(voiceErrorMessage(event?.error));
-        finish(token);
+        active.transcriptParts = [];
+        try {
+          onError(voiceErrorMessage(event?.error));
+        } finally {
+          finish(token, false);
+        }
       };
-      recognition.onend = () => finish(token);
+      recognition.onend = () => finish(token, true);
       recognition.start();
       return true;
     } catch {

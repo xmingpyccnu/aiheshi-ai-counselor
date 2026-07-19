@@ -208,12 +208,16 @@ test('输入区提供可降级的语音转文字', () => {
 test('语音按钮具备听写状态、禁用态和减少动效适配', () => {
   const css = read('css/styles.css');
   const source = read('js/chat.js');
+  const listeningRule = css.match(/\.voice-input\.listening\s*\{([^}]+)\}/);
   assert.match(css, /\.voice-input\b/);
   assert.match(css, /\.voice-input\.listening\b/);
   assert.match(css, /\.voice-input:disabled\b/);
   assert.match(source, /aria-pressed/);
   assert.match(source, /正在听/);
   assert.match(source, /this\.voiceBtn\.disabled\s*=\s*this\.isProcessing/);
+  assert.ok(listeningRule);
+  assert.match(listeningRule[1], /animation:/);
+  assert.doesNotMatch(listeningRule[1], /infinite/);
 });
 
 test('语音输入附近明示处理方、联网、音频保存与兼容性边界', () => {

@@ -713,7 +713,7 @@ body{
   color:#fffdf8;
   background:var(--desk-red, #8f2f2b);
   border-color:var(--desk-red, #8f2f2b);
-  animation:voicePulse 1.35s ease-in-out infinite;
+  animation:voicePulse 1.35s ease-in-out 1;
 }
 
 .voice-input:disabled {
