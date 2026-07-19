@@ -45,6 +45,10 @@ class ChatApp {
     this.goalInput = document.getElementById('goalInput');
     this.careerTrack = document.getElementById('careerTrack');
     this.historyList = document.getElementById('historyList');
+    this.voiceBtn = document.getElementById('voiceBtn');
+    this.voiceStatus = document.getElementById('voiceStatus');
+    this.voiceLabel = this.voiceBtn.querySelector('span');
+    this.setupVoiceInput();
 
     this.sendBtn.addEventListener('click', () => this.handleSend());
     this.msgInput.addEventListener('keydown', event => {
@@ -100,6 +104,7 @@ class ChatApp {
 
   navigateTo(view) {
     if (!['home', 'chat', 'profile'].includes(view)) return;
+    if (view !== 'chat') this.cancelVoiceInput();
     this.currentView = view;
     this.homeScreen.classList.toggle('hidden', view !== 'home');
     this.chatView.classList.toggle('hidden', view !== 'chat');
@@ -131,6 +136,7 @@ class ChatApp {
       return;
     }
 
+    this.cancelVoiceInput();
     this.currentScene = index;
     this.renderCurrentSession();
     this.navigateTo('chat');
@@ -450,6 +456,7 @@ class ChatApp {
       return;
     }
 
+    this.cancelVoiceInput();
     const text = this.msgInput.value.trim();
     if (!text) return;
     const requestScene = this.currentScene;
@@ -477,6 +484,7 @@ class ChatApp {
   }
 
   beginProcessing() {
+    this.cancelVoiceInput();
     this.isProcessing = true;
     this.roundSequence = (Number.isSafeInteger(this.roundSequence) ? this.roundSequence : 0) + 1;
     this.currentRound = this.roundSequence;
@@ -488,6 +496,7 @@ class ChatApp {
     this.lastPersistenceResult = null;
     this.sendBtn.disabled = true;
     this.msgInput.disabled = true;
+    if (this.voiceBtn) this.voiceBtn.disabled = true;
   }
 
   async fetchAIReply(text, options = {}) {
@@ -665,6 +674,13 @@ class ChatApp {
     this.isProcessing = false;
     this.sendBtn.disabled = false;
     this.msgInput.disabled = false;
+    if (this.voiceBtn) {
+      if (this.voiceController?.supported) {
+        this.voiceBtn.disabled = this.isProcessing;
+      } else {
+        this.voiceBtn.disabled = true;
+      }
+    }
     this.updateComposer();
     if (this.currentView === 'chat') this.msgInput.focus();
   }
@@ -674,6 +690,57 @@ class ChatApp {
     this.msgInput.style.height = `${Math.min(this.msgInput.scrollHeight, 120)}px`;
     const hasText = Boolean(this.msgInput.value.trim());
     this.sendBtn.classList.toggle('ready', hasText && !this.isProcessing);
+  }
+
+  setupVoiceInput() {
+    this.voiceController = createVoiceController({
+      root: window,
+      onTranscript: text => this.acceptVoiceTranscript(text),
+      onState: state => this.updateVoiceState(state),
+      onError: message => this.toast(message),
+    });
+
+    if (!this.voiceController.supported) {
+      this.voiceBtn.disabled = true;
+      this.voiceBtn.title = '当前浏览器不支持语音转文字';
+      this.voiceStatus.textContent = '当前浏览器不支持语音转文字，可继续使用文本输入。';
+    }
+
+    this.voiceBtn.addEventListener('click', () => {
+      if (this.isProcessing || !this.voiceController.supported) return;
+      this.voiceController.toggle();
+    });
+  }
+
+  acceptVoiceTranscript(text) {
+    if (this.currentView !== 'chat' || this.isProcessing) return;
+    const transcript = String(text || '').trim();
+    if (!transcript) return;
+    const existing = this.msgInput.value.slice(0, 8_000);
+    const available = 8_000 - existing.length;
+    if (available <= 0) return;
+    const addition = `${existing ? '，' : ''}${transcript}`.slice(0, available);
+    this.msgInput.value = existing + addition;
+    this.updateComposer();
+    this.msgInput.focus();
+    this.toast('语音已转为文字，请确认后发送');
+  }
+
+  updateVoiceState(state) {
+    if (!this.voiceBtn) return;
+    const listening = state === 'listening';
+    this.voiceBtn.classList.toggle('listening', listening);
+    this.voiceBtn.setAttribute('aria-pressed', String(listening));
+    this.voiceBtn.setAttribute('aria-label', listening ? '停止语音输入' : '开始语音输入');
+    if (this.voiceLabel) this.voiceLabel.textContent = listening ? '停' : '话';
+    this.voiceStatus.textContent = listening
+      ? '正在听……再次点击停止'
+      : '语音输入已停止';
+  }
+
+  cancelVoiceInput() {
+    if (!this.voiceController?.supported) return false;
+    return this.voiceController.cancel();
   }
 
   addCrisisSupportMessage(requestScene = this.currentScene) {

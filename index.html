@@ -112,6 +112,10 @@
 
                 <div class="input-bar">
                     <label for="msgInput" class="sr-only">输入消息</label>
+                    <button id="voiceBtn" class="voice-input" type="button" aria-label="开始语音输入" aria-pressed="false">
+                        <span aria-hidden="true">话</span>
+                    </button>
+                    <span id="voiceStatus" class="voice-status sr-only" role="status" aria-live="polite"></span>
                     <textarea id="msgInput" maxlength="8000" placeholder="描述你的问题…" rows="1" autocomplete="off" spellcheck="false"></textarea>
                     <button class="send" id="sendBtn" aria-label="发送消息">
                         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20.5 22 12 3 3.5V10l13 2-13 2z"/></svg>
@@ -223,6 +227,7 @@
     <script src="js/scenes.js"></script>
     <script src="js/storage.js"></script>
     <script src="js/profile.js"></script>
+    <script src="js/voice.js"></script>
     <script src="js/chat.js"></script>
     <script src="js/app.js"></script>
 </body>

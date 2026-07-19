@@ -193,3 +193,25 @@ test('本地资料和历史控件有暖纸风格与可见焦点', () => {
   assert.match(css, /:focus-visible/);
   assert.doesNotMatch(css, /linear-gradient\([^)]*(?:#?8b5cf6|#?7c3aed|purple)/i);
 });
+
+test('输入区提供可降级的语音转文字', () => {
+  const html = read('index.html');
+  const source = read('js/chat.js');
+  assert.match(html, /id="voiceBtn"/);
+  assert.match(html, /id="voiceStatus"/);
+  assert.ok(html.indexOf('js/voice.js') < html.indexOf('js/chat.js'));
+  assert.match(source, /createVoiceController/);
+  assert.match(source, /this\.msgInput\.value/);
+  assert.doesNotMatch(source, /onTranscript:[^}]*handleSend\(/s);
+});
+
+test('语音按钮具备听写状态、禁用态和减少动效适配', () => {
+  const css = read('css/styles.css');
+  const source = read('js/chat.js');
+  assert.match(css, /\.voice-input\b/);
+  assert.match(css, /\.voice-input\.listening\b/);
+  assert.match(css, /\.voice-input:disabled\b/);
+  assert.match(source, /aria-pressed/);
+  assert.match(source, /正在听/);
+  assert.match(source, /this\.voiceBtn\.disabled\s*=\s*this\.isProcessing/);
+});
