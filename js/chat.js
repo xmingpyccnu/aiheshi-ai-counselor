@@ -3,7 +3,7 @@ class ChatApp {
     this.currentScene = 0;
     this.currentView = 'home';
     this.localStore = createLocalStateStore(window.localStorage);
-    const localState = this.localStore.load();
+    const localState = defaultState();
     this.profile = localState.profile;
     this.sessions = [localState.sessions[0], localState.sessions[1], [], localState.sessions[3]];
     this.sessionRevisions = localState.sessionRevisions;
@@ -22,7 +22,15 @@ class ChatApp {
     this.activeRequest = null;
     this.pendingProfileRender = false;
     this.lastPersistenceResult = null;
+    this.roundPersistenceReason = '';
+    this.ready = this.initialize();
+  }
+
+  async initialize() {
+    const localState = await this.localStore.load();
+    this.applyLocalState(localState);
     this.init();
+    return this;
   }
 
   init() {
@@ -94,7 +102,7 @@ class ChatApp {
       if (!this.handoffModal.classList.contains('hidden')) this.closeHandoff();
       else if (!this.crisisModal.classList.contains('hidden')) this.closeCrisis();
     });
-    window.addEventListener('storage', event => this.handleStorageEvent(event));
+    window.addEventListener('storage', event => { void this.handleStorageEvent(event); });
 
     this.renderProfileForm();
     this.renderCurrentSession();
@@ -209,7 +217,7 @@ class ChatApp {
     return avatar;
   }
 
-  addUserMessage(text, options = {}) {
+  async addUserMessage(text, options = {}) {
     const targetScene = Number.isInteger(options.scene) ? options.scene : this.currentScene;
     let message = options.message || {
       who: 'user',
@@ -224,7 +232,7 @@ class ChatApp {
       this.sessions[targetScene].push(message);
       this.sessions[targetScene] = this.localStore.normalizeSession(this.sessions[targetScene]);
       normalizationChanged = JSON.stringify(unnormalized) !== JSON.stringify(this.sessions[targetScene]);
-      const persistenceResult = this.persistCurrentSession(targetScene);
+      const persistenceResult = await this.persistCurrentSession(targetScene);
       this.notePersistenceResult(persistenceResult);
       message = this.sessions[targetScene].find(candidate => candidate.id === message.id) || message;
     }
@@ -251,7 +259,7 @@ class ChatApp {
     return message;
   }
 
-  addAIMessage(reply, options = {}) {
+  async addAIMessage(reply, options = {}) {
     const targetScene = Number.isInteger(options.scene) ? options.scene : this.currentScene;
     let message = options.message || {
       who: 'ai',
@@ -269,7 +277,7 @@ class ChatApp {
       this.sessions[targetScene].push(message);
       this.sessions[targetScene] = this.localStore.normalizeSession(this.sessions[targetScene]);
       normalizationChanged = JSON.stringify(unnormalized) !== JSON.stringify(this.sessions[targetScene]);
-      const persistenceResult = this.persistCurrentSession(targetScene);
+      const persistenceResult = await this.persistCurrentSession(targetScene);
       this.notePersistenceResult(persistenceResult);
       message = this.sessions[targetScene].find(candidate => candidate.id === message.id) || message;
     }
@@ -341,11 +349,11 @@ class ChatApp {
     const yes = document.createElement('button');
     yes.type = 'button';
     yes.textContent = '已解决';
-    yes.addEventListener('click', () => {
+    yes.addEventListener('click', async () => {
       message.feedbackStatus = 'resolved';
       this.syncFeedbackStatus(targetScene, message);
-      const result = this.handleStandalonePersistenceResult(
-        this.persistCurrentSession(targetScene),
+      const result = await this.handleStandalonePersistenceResult(
+        await this.persistCurrentSession(targetScene),
         targetScene
       );
       if (result.reason === 'conflict') return;
@@ -354,19 +362,19 @@ class ChatApp {
     const no = document.createElement('button');
     no.type = 'button';
     no.textContent = '未解决';
-    no.addEventListener('click', () => {
+    no.addEventListener('click', async () => {
       message.feedbackStatus = 'unresolved';
       this.syncFeedbackStatus(targetScene, message);
       this.replaceFeedbackState(actions, message.followupDepth >= 1 ? '转入人工协助' : '正在补充回答…');
       if (message.followupDepth >= 1) {
-        const result = this.handleStandalonePersistenceResult(
-          this.persistCurrentSession(targetScene),
+        const result = await this.handleStandalonePersistenceResult(
+          await this.persistCurrentSession(targetScene),
           targetScene
         );
         if (result.reason === 'conflict') return;
         this.showHumanHandoff(message);
       } else {
-        this.requestSecondAnswer(message, targetScene);
+        await this.requestSecondAnswer(message, targetScene);
       }
     });
     actions.append(label, yes, no);
@@ -386,23 +394,23 @@ class ChatApp {
     actions.replaceChildren(state);
   }
 
-  requestSecondAnswer(message, requestScene = this.currentScene) {
+  async requestSecondAnswer(message, requestScene = this.currentScene) {
     if (this.isProcessing) return;
     const prompt = '这个回答没有解决我的问题。请回到我原来的问题，补充明确的制度依据、适用条件、具体步骤和可行的替代方案；不确定的信息请直接说明。';
     this.beginProcessing();
-    this.notePersistenceResult(this.persistCurrentSession(requestScene));
+    this.notePersistenceResult(await this.persistCurrentSession(requestScene));
     if (this.getLastPersistenceResult()?.reason === 'conflict') {
-      this.cancelRoundForConflict();
+      await this.cancelRoundForConflict();
       return;
     }
-    this.addUserMessage(prompt, { scene: requestScene });
+    await this.addUserMessage(prompt, { scene: requestScene });
     if (this.getLastPersistenceResult()?.reason === 'conflict') {
-      this.cancelRoundForConflict();
+      await this.cancelRoundForConflict();
       return;
     }
     const requestRevision = this.getSceneRevision(requestScene);
     if (requestScene === this.currentScene) this.showTyping();
-    this.fetchAIReply(prompt, {
+    void this.fetchAIReply(prompt, {
       followupDepth: (message.followupDepth || 0) + 1,
       scene: requestScene,
       revision: requestRevision,
@@ -448,7 +456,7 @@ class ChatApp {
     }
   }
 
-  handleSend() {
+  async handleSend() {
     const now = Date.now();
     if (now - this.lastSendTime < this.debounceDelay) return;
     if (this.isProcessing) {
@@ -462,9 +470,9 @@ class ChatApp {
     const requestScene = this.currentScene;
     this.lastSendTime = now;
     this.beginProcessing();
-    this.addUserMessage(text, { scene: requestScene });
+    await this.addUserMessage(text, { scene: requestScene });
     if (this.getLastPersistenceResult()?.reason === 'conflict') {
-      this.cancelRoundForConflict();
+      await this.cancelRoundForConflict();
       return;
     }
     const requestRevision = this.getSceneRevision(requestScene);
@@ -472,7 +480,7 @@ class ChatApp {
     this.updateComposer();
 
     if (isCrisis(text)) {
-      this.addCrisisSupportMessage(requestScene);
+      await this.addCrisisSupportMessage(requestScene);
       this.showCrisisModal();
       this.finishProcessingRound();
       this.resetProcessingState();
@@ -480,7 +488,7 @@ class ChatApp {
     }
 
     this.showTyping();
-    this.fetchAIReply(text, { scene: requestScene, revision: requestRevision });
+    void this.fetchAIReply(text, { scene: requestScene, revision: requestRevision });
   }
 
   beginProcessing() {
@@ -491,6 +499,7 @@ class ChatApp {
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
     this.roundNetworkMessage = '';
+    this.roundPersistenceReason = '';
     this.roundConflict = false;
     this.activeRequest = null;
     this.lastPersistenceResult = null;
@@ -551,11 +560,11 @@ class ChatApp {
       }
 
       this.removeTyping();
-      this.addAIMessage(
+      await this.addAIMessage(
         { parts: [{ type: 'text', text: data.reply }] },
         { followupDepth: options.followupDepth || 0, scene: requestScene }
       );
-      this.resolveReplyPersistenceConflict(requestScene);
+      await this.resolveReplyPersistenceConflict(requestScene);
     } catch (error) {
       console.error('获取AI回复失败:', error.name);
       this.removeTyping();
@@ -564,11 +573,11 @@ class ChatApp {
       this.roundNetworkMessage = error.name === 'AbortError'
         ? '获取回复失败（回答超时），请稍后重试'
         : '获取回复失败，请稍后重试';
-      this.addAIMessage(getAIReply(requestScene, text), {
+      await this.addAIMessage(getAIReply(requestScene, text), {
         feedbackEligible: false,
         scene: requestScene,
       });
-      this.resolveReplyPersistenceConflict(requestScene);
+      await this.resolveReplyPersistenceConflict(requestScene);
     } finally {
       clearTimeout(timeout);
       this.finishProcessingRound();
@@ -603,6 +612,7 @@ class ChatApp {
     const persistenceResult = this.normalizePersistenceResult(result);
     this.lastPersistenceResult = persistenceResult;
     this.roundSaveFailed = persistenceResult.ok === false && persistenceResult.reason !== 'conflict';
+    if (this.roundSaveFailed) this.roundPersistenceReason = persistenceResult.reason || 'unavailable';
   }
 
   normalizePersistenceResult(result) {
@@ -615,9 +625,9 @@ class ChatApp {
     return this.normalizePersistenceResult(this.lastPersistenceResult);
   }
 
-  cancelRoundForConflict() {
+  async cancelRoundForConflict() {
     const conflict = this.getLastPersistenceResult();
-    this.applyLocalState(conflict.state || this.localStore.load());
+    this.applyLocalState(conflict.state || await this.localStore.load());
     if (this.currentScene !== 2) this.renderCurrentSession();
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
@@ -628,10 +638,10 @@ class ChatApp {
     this.resetProcessingState();
   }
 
-  resolveReplyPersistenceConflict(requestScene) {
+  async resolveReplyPersistenceConflict(requestScene) {
     const conflict = this.getLastPersistenceResult();
     if (conflict.reason !== 'conflict') return false;
-    this.applyLocalState(conflict.state || this.localStore.load());
+    this.applyLocalState(conflict.state || await this.localStore.load());
     if (requestScene === this.currentScene && requestScene !== 2) this.renderCurrentSession();
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
@@ -640,17 +650,23 @@ class ChatApp {
     return true;
   }
 
-  handleStandalonePersistenceResult(result, targetScene) {
+  async handleStandalonePersistenceResult(result, targetScene) {
     const persistenceResult = this.normalizePersistenceResult(result);
     if (persistenceResult.ok) return persistenceResult;
     if (persistenceResult.reason === 'conflict') {
-      this.applyLocalState(persistenceResult.state || this.localStore.load());
+      this.applyLocalState(persistenceResult.state || await this.localStore.load());
       if (targetScene === this.currentScene && targetScene !== 2) this.renderCurrentSession();
       this.toast('对话已在其他页面更新，请重试');
       return persistenceResult;
     }
-    this.toast('对话未能保存');
+    this.toast(this.persistenceFailureMessage(persistenceResult.reason));
     return persistenceResult;
+  }
+
+  persistenceFailureMessage(reason) {
+    if (reason === 'locking-unsupported') return '当前浏览器不支持安全的本地保存';
+    if (reason === 'lock-failed') return '本地保存暂不可用';
+    return '对话未能保存';
   }
 
   finishProcessingRound() {
@@ -661,12 +677,13 @@ class ChatApp {
       message = this.roundNetworkMessage;
       if (this.roundSaveFailed) message += '；当前对话未保存';
     } else if (this.roundSaveFailed) {
-      message = '对话未能保存';
+      message = this.persistenceFailureMessage(this.roundPersistenceReason);
     }
     if (message) this.toast(message);
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
     this.roundNetworkMessage = '';
+    this.roundPersistenceReason = '';
     this.roundConflict = false;
   }
 
@@ -752,8 +769,8 @@ class ChatApp {
     return this.voiceController.cancel();
   }
 
-  addCrisisSupportMessage(requestScene = this.currentScene) {
-    this.addAIMessage({ parts: [{
+  async addCrisisSupportMessage(requestScene = this.currentScene) {
+    await this.addAIMessage({ parts: [{
       type: 'text',
       coral: true,
       text: '我注意到你提到了自杀、自伤或活不下去，我很担心你现在的安全。请先不要独处，立即远离可能伤害自己的物品，并联系一位你信任的人陪着你。\n\n如果危险正在发生、你已经采取行动或已经受伤，请立即拨打110或120。你也可以拨打全国心理援助热线12356，或安徽精神卫生中心24小时心理援助热线0551-63666903。\n\n如果方便，请只告诉我：你现在是“安全”，还是“有危险”？'
@@ -802,7 +819,7 @@ class ChatApp {
     this.renderCareerTrack();
   }
 
-  handleProfileSubmit(event) {
+  async handleProfileSubmit(event) {
     event.preventDefault();
     if (this.isProcessing) {
       this.toast('请等待当前回答完成后再保存资料');
@@ -814,12 +831,18 @@ class ChatApp {
       goal: this.goalInput.value.trim().slice(0, 120),
     };
 
-    if (!this.localStore.saveProfile(nextProfile)) {
-      this.toast('本地资料保存失败，请检查浏览器存储设置');
+    const result = this.normalizePersistenceResult(await this.localStore.saveProfile(nextProfile));
+    if (!result.ok) {
+      const message = result.reason === 'locking-unsupported'
+        ? '当前浏览器不支持安全的本地保存'
+        : result.reason === 'lock-failed'
+          ? '本地保存暂不可用'
+          : '本地资料保存失败，请检查浏览器存储设置';
+      this.toast(message);
       return;
     }
 
-    this.profile = nextProfile;
+    this.profile = result.profile || nextProfile;
     this.renderProfileForm();
     if (this.currentScene === 1) this.renderCurrentSession();
     this.toast('本地资料已保存');
@@ -836,14 +859,14 @@ class ChatApp {
     this.careerTrack.replaceChildren(heading, description);
   }
 
-  persistCurrentSession(targetScene = this.currentScene) {
+  async persistCurrentSession(targetScene = this.currentScene) {
     if (targetScene === 2) {
       const result = { ok: true, revision: null };
       this.lastPersistenceResult = result;
-      return true;
+      return result;
     }
     const normalized = this.localStore.normalizeSession(this.sessions[targetScene]);
-    const saved = this.localStore.saveSession(
+    const saved = await this.localStore.saveSession(
       targetScene,
       normalized,
       this.getSceneRevision(targetScene)
@@ -878,7 +901,7 @@ class ChatApp {
     this.sessionRevisions = localState.sessionRevisions;
   }
 
-  handleStorageEvent(event) {
+  async handleStorageEvent(event) {
     const isExternalClear = event.key === null;
     if (!isExternalClear && event.key !== this.localStore.storageKey) return;
 
@@ -889,9 +912,24 @@ class ChatApp {
       3: JSON.stringify(this.sessions[3]),
     };
     const previousRevisions = { ...this.sessionRevisions };
-    // load() also recreates an empty v2 record after another page calls
-    // localStorage.clear(); this document will not receive an event for its own write.
-    const localState = this.localStore.load();
+    let localState;
+    try {
+      if (isExternalClear) {
+        const reset = this.normalizePersistenceResult(
+          await this.localStore.resetAfterExternalClear()
+        );
+        if (!reset.ok) {
+          this.toast(this.persistenceFailureMessage(reset.reason));
+          return;
+        }
+        localState = reset.state;
+      } else {
+        localState = await this.localStore.load();
+      }
+    } catch (_error) {
+      this.toast('本地保存暂不可用');
+      return;
+    }
     const profileChanged = previousProfile !== JSON.stringify(localState.profile);
     const changedScenes = [0, 1, 3].filter(sceneIndex => (
       previousSessions[sceneIndex] !== JSON.stringify(localState.sessions[sceneIndex])
@@ -1009,25 +1047,29 @@ class ChatApp {
     this.navigateTo('chat');
   }
 
-  deleteHistory(sceneIndex) {
+  async deleteHistory(sceneIndex) {
     if (this.isProcessing) {
       this.toast('请等待当前回答完成后再删除历史');
       return;
     }
     if (!window.confirm('只删除当前设备上的该模块历史，是否继续？')) return;
     const result = this.normalizePersistenceResult(
-      this.localStore.clearSession(sceneIndex, this.getSceneRevision(sceneIndex))
+      await this.localStore.clearSession(sceneIndex, this.getSceneRevision(sceneIndex))
     );
     if (!result.ok) {
       if (result.reason === 'conflict') {
-        this.applyLocalState(result.state || this.localStore.load());
+        this.applyLocalState(result.state || await this.localStore.load());
         if (this.currentScene === sceneIndex) this.renderCurrentSession();
         this.updateProfileStats();
         this.renderHistoryList();
         this.toast('对话已在其他页面更新，请重试');
         return;
       }
-      this.toast('本地历史删除失败');
+      this.toast(result.reason === 'locking-unsupported'
+        ? '当前浏览器不支持安全的本地保存'
+        : result.reason === 'lock-failed'
+          ? '本地保存暂不可用'
+          : '本地历史删除失败');
       return;
     }
 
@@ -1041,25 +1083,29 @@ class ChatApp {
     this.toast('该模块本地历史已删除');
   }
 
-  clearAllHistory() {
+  async clearAllHistory() {
     if (this.isProcessing) {
       this.toast('请等待当前回答完成后再清空历史');
       return;
     }
     if (!window.confirm('将清除当前设备上的校园、成长和事务历史，是否继续？')) return;
     const result = this.normalizePersistenceResult(
-      this.localStore.clearAllSessions({ ...this.sessionRevisions })
+      await this.localStore.clearAllSessions({ ...this.sessionRevisions })
     );
     if (!result.ok) {
       if (result.reason === 'conflict') {
-        this.applyLocalState(result.state || this.localStore.load());
+        this.applyLocalState(result.state || await this.localStore.load());
         if (this.currentScene !== 2) this.renderCurrentSession();
         this.updateProfileStats();
         this.renderHistoryList();
         this.toast('对话已在其他页面更新，请重试');
         return;
       }
-      this.toast('本地历史清空失败');
+      this.toast(result.reason === 'locking-unsupported'
+        ? '当前浏览器不支持安全的本地保存'
+        : result.reason === 'lock-failed'
+          ? '本地保存暂不可用'
+          : '本地历史清空失败');
       return;
     }
 

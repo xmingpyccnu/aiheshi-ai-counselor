@@ -1,8 +1,10 @@
 (function initLocalStorageModule(root) {
   'use strict';
 
-  const STORAGE_KEY = 'aihesh.local.v2';
-  const LEGACY_STORAGE_KEY = 'aihesh.local.v1';
+  const STORAGE_KEY = 'aihesh.local.v3';
+  const LOCK_NAME = 'aihesh.local.v3.root';
+  const V2_STORAGE_KEY = 'aihesh.local.v2';
+  const V1_STORAGE_KEY = 'aihesh.local.v1';
   const ALLOWED_SCENES = new Set([0, 1, 3]);
   const ALLOWED_GRADES = new Set(['', 'freshman', 'sophomore', 'junior', 'senior']);
   const ALLOWED_PART_TYPES = new Set(['text', 'source', 'card']);
@@ -13,7 +15,7 @@
 
   function defaultState() {
     return {
-      version: 2,
+      version: 3,
       profile: { grade: '', major: '', goal: '' },
       sessions: { 0: [], 1: [], 3: [] },
       sessionRevisions: { 0: 0, 1: 0, 3: 0 },
@@ -126,22 +128,17 @@
     return Number.isSafeInteger(value) && value >= 0 ? value : 0;
   }
 
-  function cleanState(value) {
-    if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 2) {
-      return defaultState();
-    }
-
-    const sessions = value.sessions && typeof value.sessions === 'object' && !Array.isArray(value.sessions)
+  function stateFromVersion(value, version) {
+    const sessions = value?.sessions && typeof value.sessions === 'object' && !Array.isArray(value.sessions)
       ? value.sessions
       : {};
-    const revisions = value.sessionRevisions
-      && typeof value.sessionRevisions === 'object'
-      && !Array.isArray(value.sessionRevisions)
-      ? value.sessionRevisions
+    const revisionsSource = version === 1 ? value?.sessionGenerations : value?.sessionRevisions;
+    const revisions = revisionsSource && typeof revisionsSource === 'object' && !Array.isArray(revisionsSource)
+      ? revisionsSource
       : {};
     return {
-      version: 2,
-      profile: cleanProfile(value.profile),
+      version: 3,
+      profile: cleanProfile(value?.profile),
       sessions: {
         0: cleanMessages(sessions[0]),
         1: cleanMessages(sessions[1]),
@@ -155,37 +152,37 @@
     };
   }
 
-  function migrateLegacyState(value) {
-    if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1) {
+  function cleanState(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 3) {
       return defaultState();
     }
-    const legacySessions = value.sessions && typeof value.sessions === 'object' && !Array.isArray(value.sessions)
-      ? value.sessions
-      : {};
-    const legacyGenerations = value.sessionGenerations
-      && typeof value.sessionGenerations === 'object'
-      && !Array.isArray(value.sessionGenerations)
-      ? value.sessionGenerations
-      : {};
-    return {
-      version: 2,
-      profile: cleanProfile(value.profile),
-      sessions: {
-        0: cleanMessages(legacySessions[0]),
-        1: cleanMessages(legacySessions[1]),
-        3: cleanMessages(legacySessions[3]),
-      },
-      sessionRevisions: {
-        0: cleanRevision(legacyGenerations[0]),
-        1: cleanRevision(legacyGenerations[1]),
-        3: cleanRevision(legacyGenerations[3]),
-      },
-    };
+    return stateFromVersion(value, 3);
   }
 
-  function createLocalStateStore(storage) {
+  function migrateVersion(value, version) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== version) {
+      return defaultState();
+    }
+    return stateFromVersion(value, version);
+  }
+
+  function createLocalStateStore(storage, options = {}) {
+    const isCommonJs = typeof module !== 'undefined' && module.exports;
+    const inheritedLockManager = isCommonJs ? null : root?.navigator?.locks;
+    const lockManager = Object.hasOwn(options, 'lockManager')
+      ? options.lockManager
+      : inheritedLockManager;
+    const lockingSupported = Boolean(lockManager && typeof lockManager.request === 'function');
+    const capability = lockingSupported
+      ? { safePersistence: true, reason: null }
+      : { safePersistence: false, reason: 'locking-unsupported' };
+
     function normalizeSession(messages) {
       return cleanMessages(messages);
+    }
+
+    function failure(reason, extras = {}) {
+      return { ok: false, reason, ...extras };
     }
 
     function readRaw(key) {
@@ -195,12 +192,10 @@
       } catch (_error) {
         return { status: 'unavailable' };
       }
-
       if (raw === null) return { status: 'missing' };
       if (typeof raw !== 'string' || raw.length > MAX_RAW_JSON_LENGTH) {
         return { status: 'invalid' };
       }
-
       try {
         return { status: 'valid', value: JSON.parse(raw) };
       } catch (_error) {
@@ -219,112 +214,142 @@
       }
     }
 
-    function readState() {
+    function readV3() {
       const current = readRaw(STORAGE_KEY);
-      if (current.status === 'unavailable') {
-        return { canWrite: false, state: defaultState() };
-      }
-      if (current.status === 'valid') {
-        if (!current.value || current.value.version !== 2) {
-          return { canWrite: false, state: defaultState() };
+      if (current.status !== 'valid') return current;
+      if (!current.value || current.value.version !== 3) return { status: 'invalid' };
+      return { status: 'valid', state: cleanState(current.value) };
+    }
+
+    function initializeMissingV3Locked({ allowLegacy = true } = {}) {
+      const current = readV3();
+      if (current.status === 'valid') return { ok: true, state: current.state };
+      if (current.status !== 'missing') return failure('unavailable');
+
+      let state = defaultState();
+      if (allowLegacy) {
+        const v2 = readRaw(V2_STORAGE_KEY);
+        if (v2.status === 'unavailable') return failure('unavailable');
+        if (v2.status === 'valid') {
+          state = migrateVersion(v2.value, 2);
+        } else if (v2.status === 'missing') {
+          const v1 = readRaw(V1_STORAGE_KEY);
+          if (v1.status === 'unavailable') return failure('unavailable');
+          if (v1.status === 'valid') state = migrateVersion(v1.value, 1);
         }
-        return { canWrite: true, state: cleanState(current.value) };
       }
-      if (current.status === 'invalid') {
-        return { canWrite: false, state: defaultState() };
+      return write(state) ? { ok: true, state } : failure('unavailable');
+    }
+
+    async function withExclusiveLock(operation) {
+      if (!lockingSupported) return failure('locking-unsupported');
+      try {
+        return await lockManager.request(
+          LOCK_NAME,
+          { mode: 'exclusive' },
+          async lock => {
+            if (!lock) return failure('lock-failed');
+            return operation();
+          }
+        );
+      } catch (_error) {
+        return failure('lock-failed');
       }
-
-      const legacy = readRaw(LEGACY_STORAGE_KEY);
-      if (legacy.status === 'unavailable') {
-        return { canWrite: false, state: defaultState() };
-      }
-      const state = legacy.status === 'valid'
-        ? migrateLegacyState(legacy.value)
-        : defaultState();
-      return { canWrite: write(state), state };
     }
 
-    function load() {
-      return readState().state;
+    async function load() {
+      const current = readV3();
+      if (current.status === 'valid') return current.state;
+      if (current.status !== 'missing') return defaultState();
+      const initialized = await withExclusiveLock(() => initializeMissingV3Locked());
+      return initialized.ok ? initialized.state : defaultState();
     }
 
-    function failure(reason, extras = {}) {
-      return { ok: false, reason, ...extras };
+    async function resetAfterExternalClear() {
+      return withExclusiveLock(() => initializeMissingV3Locked({ allowLegacy: false }));
     }
 
-    function saveProfile(profile) {
-      const result = readState();
-      if (!result.canWrite) return false;
-      const state = result.state;
-      state.profile = cleanProfile(profile);
-      return write(state);
+    async function mutate(operation) {
+      return withExclusiveLock(() => {
+        const initialized = initializeMissingV3Locked();
+        if (!initialized.ok) return initialized;
+        return operation(initialized.state);
+      });
     }
 
-    function saveSession(scene, messages, expectedRevision) {
+    async function saveProfile(profile) {
+      const cleanedProfile = cleanProfile(profile);
+      return mutate(state => {
+        state.profile = cleanedProfile;
+        return write(state)
+          ? { ok: true, profile: cleanedProfile }
+          : failure('unavailable');
+      });
+    }
+
+    async function saveSession(scene, messages, expectedRevision) {
       if (!ALLOWED_SCENES.has(scene) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
         return failure('invalid');
       }
-      const result = readState();
-      if (!result.canWrite) return failure('unavailable');
-      const state = result.state;
-      const currentRevision = state.sessionRevisions[scene];
-      if (expectedRevision !== currentRevision) {
-        return failure('conflict', { revision: currentRevision, state });
-      }
-      if (currentRevision >= Number.MAX_SAFE_INTEGER) return failure('unavailable');
-      state.sessions[scene] = normalizeSession(messages);
-      state.sessionRevisions[scene] = currentRevision + 1;
-      const saved = write(state);
-      return saved
-        ? { ok: true, revision: state.sessionRevisions[scene] }
-        : failure('unavailable');
+      const normalized = normalizeSession(messages);
+      return mutate(state => {
+        const currentRevision = state.sessionRevisions[scene];
+        if (expectedRevision !== currentRevision) {
+          return failure('conflict', { revision: currentRevision, state });
+        }
+        if (currentRevision >= Number.MAX_SAFE_INTEGER) return failure('unavailable');
+        state.sessions[scene] = normalized;
+        state.sessionRevisions[scene] = currentRevision + 1;
+        return write(state)
+          ? { ok: true, revision: state.sessionRevisions[scene] }
+          : failure('unavailable');
+      });
     }
 
-    function clearSession(scene, expectedRevision) {
+    async function clearSession(scene, expectedRevision) {
       if (!ALLOWED_SCENES.has(scene) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
         return failure('invalid');
       }
-      const result = readState();
-      if (!result.canWrite) return failure('unavailable');
-      const state = result.state;
-      const currentRevision = state.sessionRevisions[scene];
-      if (expectedRevision !== currentRevision) {
-        return failure('conflict', { revision: currentRevision, state });
-      }
-      if (currentRevision >= Number.MAX_SAFE_INTEGER) return failure('unavailable');
-      state.sessions[scene] = [];
-      state.sessionRevisions[scene] = currentRevision + 1;
-      return write(state)
-        ? { ok: true, revision: state.sessionRevisions[scene] }
-        : failure('unavailable');
+      return mutate(state => {
+        const currentRevision = state.sessionRevisions[scene];
+        if (expectedRevision !== currentRevision) {
+          return failure('conflict', { revision: currentRevision, state });
+        }
+        if (currentRevision >= Number.MAX_SAFE_INTEGER) return failure('unavailable');
+        state.sessions[scene] = [];
+        state.sessionRevisions[scene] = currentRevision + 1;
+        return write(state)
+          ? { ok: true, revision: state.sessionRevisions[scene] }
+          : failure('unavailable');
+      });
     }
 
-    function clearAllSessions(expectedRevisions) {
+    async function clearAllSessions(expectedRevisions) {
       if (!expectedRevisions || typeof expectedRevisions !== 'object') return failure('invalid');
-      const result = readState();
-      if (!result.canWrite) return failure('unavailable');
-      const state = result.state;
-      const hasConflict = [0, 1, 3].some(scene => (
-        expectedRevisions[scene] !== state.sessionRevisions[scene]
-      ));
-      if (hasConflict) {
-        return failure('conflict', { revisions: { ...state.sessionRevisions }, state });
-      }
-      if ([0, 1, 3].some(scene => state.sessionRevisions[scene] >= Number.MAX_SAFE_INTEGER)) {
-        return failure('unavailable');
-      }
-      state.sessions = { 0: [], 1: [], 3: [] };
-      for (const scene of ALLOWED_SCENES) {
-        state.sessionRevisions[scene] += 1;
-      }
-      return write(state)
-        ? { ok: true, revisions: { ...state.sessionRevisions } }
-        : failure('unavailable');
+      return mutate(state => {
+        const hasConflict = [0, 1, 3].some(scene => (
+          expectedRevisions[scene] !== state.sessionRevisions[scene]
+        ));
+        if (hasConflict) {
+          return failure('conflict', { revisions: { ...state.sessionRevisions }, state });
+        }
+        if ([0, 1, 3].some(scene => state.sessionRevisions[scene] >= Number.MAX_SAFE_INTEGER)) {
+          return failure('unavailable');
+        }
+        state.sessions = { 0: [], 1: [], 3: [] };
+        for (const scene of ALLOWED_SCENES) state.sessionRevisions[scene] += 1;
+        return write(state)
+          ? { ok: true, revisions: { ...state.sessionRevisions } }
+          : failure('unavailable');
+      });
     }
 
     return {
       storageKey: STORAGE_KEY,
+      lockName: LOCK_NAME,
+      capability,
       load,
+      resetAfterExternalClear,
       normalizeSession,
       saveProfile,
       saveSession,

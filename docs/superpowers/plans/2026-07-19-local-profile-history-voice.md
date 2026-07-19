@@ -1,25 +1,27 @@
 # 本地资料、历史与语音输入实施计划
 
+状态：已实施；v3+Web Locks并发安全修订已确认并落地。下方早期TDD代码片段保留为实施过程记录，存储契约以本页开头的最终架构和当前测试为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在不伪造学校账号和办理系统的前提下，实现本地学生资料、年级化生涯服务、非心理对话恢复和可降级的语音转文字。
 
-**Architecture:** 新增三个原生JavaScript模块，分别处理带版本的本地存储、年级到生涯主题的映射、浏览器语音识别。`ChatApp`继续负责组装UI和对话，但不自行实现存储和语音底层逻辑。心理模块永远不写入`localStorage`；成长模块请求仅在调用AI时携带已校验的年级、专业和目标。
+**Architecture:** 新增三个原生JavaScript模块，分别处理带版本的本地存储、年级到生涯主题的映射、浏览器语音识别。最终存储模型为`aihesh.local.v3`+`sessionRevisions`，所有根状态mutation使用同源Web Locks exclusive锁完成原子读改写；优先一次迁移v2，无v2时再迁移v1。`ChatApp`全面等待异步mutation；无Web Locks时不写根状态，仅允许对话内存降级。心理模块永远不写入`localStorage`；成长模块请求仅在调用AI时携带已校验的年级、专业和目标。
 
-**Tech Stack:** Node.js内置测试器、原生HTML/CSS/JavaScript、`localStorage`、Web Speech API、现有Node.js HTTP服务和星火API。
+**Tech Stack:** Node.js内置测试器、原生HTML/CSS/JavaScript、`localStorage`、Web Locks API、Web Speech API、现有Node.js HTTP服务和星火API。
 
 ---
 
 ## 文件结构
 
-- `js/storage.js`：本地数据默认值、校验、裁剪、存取与删除；同时支持Node.js测试和浏览器全局导出。
+- `js/storage.js`：v3本地数据默认值、校验、裁剪、旧版迁移与Web Locks保护的异步存取/删除；同时支持Node.js注入lockManager测试和浏览器全局导出。
 - `js/profile.js`：大一至大四的生涯版本、欢迎文案和快捷问题映射。
 - `js/voice.js`：Web Speech API的能力检测、启停、转写和错误映射。
 - `js/chat.js`：读取三个模块，完成资料表单、历史UI、对话持久化与语音状态组装。
 - `server.js`：校验可选的本地资料字段，仅对成长场景传给Agent。
 - `agent.js`：把已校验资料作为成长场景的临时上下文，不持久化。
 - `index.html`与`css/styles.css`：资料、历史和语音状态的可访问界面。
-- `test/local_storage.test.js`：本地数据边界和心理隔离测试。
+- `test/local_storage.test.js`与`test/storage_locking.test.js`：本地数据边界、心理隔离、真并发锁排队、迁移与降级零写入测试。
 - `test/profile.test.js`：年级映射测试。
 - `test/voice.test.js`：语音支持、转写和错误降级测试。
 - `test/server.test.js`与`test/agent_prefetch.test.js`：资料输入校验与Agent上下文测试。

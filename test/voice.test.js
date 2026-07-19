@@ -374,7 +374,7 @@ test('空输入在maxlength只剩一字时可输入一个转写字符', () => {
   assert.equal(app.fetchCalls, 0);
 });
 
-test('发送时停止并作废本轮听写，迟到转写不污染新输入', () => {
+test('发送时停止并作废本轮听写，迟到转写不污染新输入', async () => {
   const instances = [];
   class FakeRecognition {
     constructor() { instances.push(this); }
@@ -387,7 +387,7 @@ test('发送时停止并作废本轮听写，迟到转写不污染新输入', ()
   app.voiceController.start();
   app.msgInput.value = '要发送的问题';
 
-  ChatApp.prototype.handleSend.call(app);
+  await ChatApp.prototype.handleSend.call(app);
   app.msgInput.value = '新一轮手动输入';
   instances[0].onresult({ results: [[{ transcript: '迟到语音' }]] });
   instances[0].onend();

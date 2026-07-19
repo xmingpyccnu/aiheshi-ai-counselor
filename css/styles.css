@@ -724,6 +724,27 @@ body{
   opacity:.78;
 }
 
+.voice-status {
+  flex:0 1 auto;
+  max-width:100%;
+  color:#59615d;
+  font-size:11px;
+  line-height:1.4;
+  overflow-wrap:anywhere;
+}
+
+.voice-status:empty {
+  display:none;
+}
+
+@media (max-width: 375px) {
+  .voice-status {
+    flex:0 0 100%;
+    flex-basis:100%;
+    padding-left:52px;
+  }
+}
+
 @keyframes voicePulse {
   50% { box-shadow:0 0 0 5px rgba(143,47,43,.16); }
 }
