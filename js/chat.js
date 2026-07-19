@@ -2,14 +2,35 @@ class ChatApp {
   constructor() {
     this.currentScene = 0;
     this.currentView = 'home';
-    this.sessions = [[], [], [], []];
+    this.localStore = createLocalStateStore(window.localStorage);
+    const localState = defaultState();
+    this.profile = localState.profile;
+    this.sessions = [localState.sessions[0], localState.sessions[1], [], localState.sessions[3]];
+    this.sessionRevisions = localState.sessionRevisions;
     this.typingEl = null;
     this.lastFocusedElement = null;
     this.isProcessing = false;
     this.lastSendTime = 0;
     this.debounceDelay = 500;
     this.messageSequence = 0;
+    this.roundSaveFailed = false;
+    this.roundNetworkFailed = false;
+    this.roundNetworkMessage = '';
+    this.roundConflict = false;
+    this.roundSequence = 0;
+    this.currentRound = 0;
+    this.activeRequest = null;
+    this.pendingProfileRender = false;
+    this.lastPersistenceResult = null;
+    this.roundPersistenceReason = '';
+    this.ready = this.initialize();
+  }
+
+  async initialize() {
+    const localState = await this.localStore.load();
+    this.applyLocalState(localState);
     this.init();
+    return this;
   }
 
   init() {
@@ -26,6 +47,16 @@ class ChatApp {
     this.handoffModal = document.getElementById('handoffModal');
     this.handoffSummary = document.getElementById('handoffSummary');
     this.toastElement = document.getElementById('toast');
+    this.profileForm = document.getElementById('profileForm');
+    this.gradeSelect = document.getElementById('gradeSelect');
+    this.majorInput = document.getElementById('majorInput');
+    this.goalInput = document.getElementById('goalInput');
+    this.careerTrack = document.getElementById('careerTrack');
+    this.historyList = document.getElementById('historyList');
+    this.voiceBtn = document.getElementById('voiceBtn');
+    this.voiceStatus = document.getElementById('voiceStatus');
+    this.voiceLabel = this.voiceBtn.querySelector('span');
+    this.setupVoiceInput();
 
     this.sendBtn.addEventListener('click', () => this.handleSend());
     this.msgInput.addEventListener('keydown', event => {
@@ -42,6 +73,9 @@ class ChatApp {
     document.getElementById('profileBtn').addEventListener('click', () => this.navigateTo('profile'));
     document.getElementById('profileBackBtn').addEventListener('click', () => this.navigateTo('home'));
     document.getElementById('chatBackBtn').addEventListener('click', () => this.navigateTo('home'));
+    this.profileForm.addEventListener('submit', event => this.handleProfileSubmit(event));
+    this.gradeSelect.addEventListener('change', () => this.renderCareerTrack(this.gradeSelect.value));
+    document.getElementById('clearAllHistory').addEventListener('click', () => this.clearAllHistory());
 
     document.querySelectorAll('.bottom-item').forEach(item => {
       item.addEventListener('click', () => {
@@ -68,7 +102,9 @@ class ChatApp {
       if (!this.handoffModal.classList.contains('hidden')) this.closeHandoff();
       else if (!this.crisisModal.classList.contains('hidden')) this.closeCrisis();
     });
+    window.addEventListener('storage', event => { void this.handleStorageEvent(event); });
 
+    this.renderProfileForm();
     this.renderCurrentSession();
     this.navigateTo('home');
     this.updateComposer();
@@ -76,6 +112,7 @@ class ChatApp {
 
   navigateTo(view) {
     if (!['home', 'chat', 'profile'].includes(view)) return;
+    if (view !== 'chat') this.cancelVoiceInput();
     this.currentView = view;
     this.homeScreen.classList.toggle('hidden', view !== 'home');
     this.chatView.classList.toggle('hidden', view !== 'chat');
@@ -88,8 +125,13 @@ class ChatApp {
       else item.removeAttribute('aria-current');
     });
 
-    if (view === 'profile') this.updateProfileStats();
+    if (view === 'profile') {
+      this.updateProfileStats();
+      this.renderCareerTrack();
+      this.renderHistoryList();
+    }
     if (view === 'chat') {
+      this.flushPendingProfileRender();
       this.scrollBottom();
       requestAnimationFrame(() => this.msgInput.focus());
     }
@@ -102,13 +144,14 @@ class ChatApp {
       return;
     }
 
+    this.cancelVoiceInput();
     this.currentScene = index;
     this.renderCurrentSession();
     this.navigateTo('chat');
   }
 
   renderCurrentSession() {
-    const scene = SCENES[this.currentScene];
+    const scene = this.getCurrentSceneConfig();
     this.navScene.textContent = scene.name;
     this.safetyBar.classList.toggle('hidden', this.currentScene !== 2);
     this.fabBtn.classList.toggle('hidden', this.currentScene !== 2);
@@ -117,10 +160,15 @@ class ChatApp {
     this.addQuickButtons(scene.tabs);
 
     for (const message of this.sessions[this.currentScene]) {
-      if (message.who === 'user') this.addUserMessage(message.text, { save: false, message });
-      if (message.who === 'ai') this.addAIMessage({ parts: message.parts }, { save: false, message });
+      if (message.who === 'user') {
+        this.addUserMessage(message.text, { save: false, message, scene: this.currentScene });
+      }
+      if (message.who === 'ai') {
+        this.addAIMessage({ parts: message.parts }, { save: false, message, scene: this.currentScene });
+      }
     }
     this.scrollBottom();
+    if (this.currentScene === 1) this.pendingProfileRender = false;
   }
 
   addWelcomeMessage(scene) {
@@ -132,7 +180,7 @@ class ChatApp {
     stack.className = 'stack left';
     const label = document.createElement('div');
     label.className = 'assistant-label';
-    label.textContent = `${scene.name} · 服务说明`;
+    label.textContent = `${scene.name} · ${scene.version || '服务说明'}`;
     const bubble = document.createElement('div');
     bubble.className = 'bubble ai';
     bubble.textContent = scene.welcome;
@@ -169,33 +217,51 @@ class ChatApp {
     return avatar;
   }
 
-  addUserMessage(text, options = {}) {
-    const message = options.message || {
+  async addUserMessage(text, options = {}) {
+    const targetScene = Number.isInteger(options.scene) ? options.scene : this.currentScene;
+    let message = options.message || {
       who: 'user',
       id: this.nextMessageId('user'),
       text,
       createdAt: Date.now(),
     };
 
-    const bubble = document.createElement('div');
-    bubble.className = 'bubble user';
-    bubble.textContent = text;
-    const stack = document.createElement('div');
-    stack.className = 'stack right';
-    stack.append(bubble, this.addTimestamp(message.createdAt));
-    const row = document.createElement('div');
-    row.className = 'row user';
-    row.dataset.messageId = message.id;
-    row.appendChild(stack);
-    this.chatScreen.appendChild(row);
+    let normalizationChanged = false;
+    if (options.save !== false) {
+      const unnormalized = [...this.sessions[targetScene], message];
+      this.sessions[targetScene].push(message);
+      this.sessions[targetScene] = this.localStore.normalizeSession(this.sessions[targetScene]);
+      normalizationChanged = JSON.stringify(unnormalized) !== JSON.stringify(this.sessions[targetScene]);
+      const persistenceResult = await this.persistCurrentSession(targetScene);
+      this.notePersistenceResult(persistenceResult);
+      message = this.sessions[targetScene].find(candidate => candidate.id === message.id) || message;
+    }
 
-    if (options.save !== false) this.sessions[this.currentScene].push(message);
-    this.scrollBottom();
+    const persistenceConflict = options.save !== false
+      && this.getLastPersistenceResult()?.reason === 'conflict';
+    if (targetScene === this.currentScene && normalizationChanged && !persistenceConflict) {
+      this.renderCurrentSession();
+    } else if (targetScene === this.currentScene && !persistenceConflict) {
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble user';
+      bubble.textContent = message.text;
+      const stack = document.createElement('div');
+      stack.className = 'stack right';
+      stack.append(bubble, this.addTimestamp(message.createdAt));
+      const row = document.createElement('div');
+      row.className = 'row user';
+      row.dataset.messageId = message.id;
+      row.appendChild(stack);
+      this.chatScreen.appendChild(row);
+    }
+
+    if (targetScene === this.currentScene) this.scrollBottom();
     return message;
   }
 
-  addAIMessage(reply, options = {}) {
-    const message = options.message || {
+  async addAIMessage(reply, options = {}) {
+    const targetScene = Number.isInteger(options.scene) ? options.scene : this.currentScene;
+    let message = options.message || {
       who: 'ai',
       id: this.nextMessageId('ai'),
       parts: reply.parts,
@@ -205,47 +271,63 @@ class ChatApp {
       followupDepth: options.followupDepth || 0,
     };
 
-    const stack = document.createElement('div');
-    stack.className = 'stack left';
-    for (const part of reply.parts) {
-      if (part.type === 'text') {
-        const bubble = document.createElement('div');
-        bubble.className = `bubble ai${part.coral ? ' coral' : ''}`;
-        bubble.textContent = part.text;
-        stack.appendChild(bubble);
-      } else if (part.type === 'source') {
-        const source = document.createElement('div');
-        source.className = 'source';
-        source.textContent = part.text;
-        stack.appendChild(source);
-      } else if (part.type === 'card') {
-        const card = document.createElement('div');
-        card.className = 'ai-card';
-        const title = document.createElement('div');
-        title.className = 'c-title';
-        title.textContent = part.title;
-        const body = document.createElement('div');
-        body.className = 'c-body';
-        body.textContent = part.body;
-        card.append(title, body);
-        stack.appendChild(card);
-      }
+    let normalizationChanged = false;
+    if (options.save !== false) {
+      const unnormalized = [...this.sessions[targetScene], message];
+      this.sessions[targetScene].push(message);
+      this.sessions[targetScene] = this.localStore.normalizeSession(this.sessions[targetScene]);
+      normalizationChanged = JSON.stringify(unnormalized) !== JSON.stringify(this.sessions[targetScene]);
+      const persistenceResult = await this.persistCurrentSession(targetScene);
+      this.notePersistenceResult(persistenceResult);
+      message = this.sessions[targetScene].find(candidate => candidate.id === message.id) || message;
     }
-    stack.appendChild(this.addTimestamp(message.createdAt));
-    if (message.feedbackEligible) this.addFeedbackActions(stack, message);
 
-    const row = document.createElement('div');
-    row.className = 'row ai';
-    row.dataset.messageId = message.id;
-    row.append(this.createAvatar(), stack);
-    this.chatScreen.appendChild(row);
+    const persistenceConflict = options.save !== false
+      && this.getLastPersistenceResult()?.reason === 'conflict';
+    if (targetScene === this.currentScene && normalizationChanged && !persistenceConflict) {
+      this.renderCurrentSession();
+    } else if (targetScene === this.currentScene && !persistenceConflict) {
+      const stack = document.createElement('div');
+      stack.className = 'stack left';
+      for (const part of message.parts) {
+        if (part.type === 'text') {
+          const bubble = document.createElement('div');
+          bubble.className = `bubble ai${part.coral ? ' coral' : ''}`;
+          bubble.textContent = part.text;
+          stack.appendChild(bubble);
+        } else if (part.type === 'source') {
+          const source = document.createElement('div');
+          source.className = 'source';
+          source.textContent = part.text;
+          stack.appendChild(source);
+        } else if (part.type === 'card') {
+          const card = document.createElement('div');
+          card.className = 'ai-card';
+          const title = document.createElement('div');
+          title.className = 'c-title';
+          title.textContent = part.title;
+          const body = document.createElement('div');
+          body.className = 'c-body';
+          body.textContent = part.body;
+          card.append(title, body);
+          stack.appendChild(card);
+        }
+      }
+      stack.appendChild(this.addTimestamp(message.createdAt));
+      if (message.feedbackEligible) this.addFeedbackActions(stack, message, targetScene);
 
-    if (options.save !== false) this.sessions[this.currentScene].push(message);
-    this.scrollBottom();
+      const row = document.createElement('div');
+      row.className = 'row ai';
+      row.dataset.messageId = message.id;
+      row.append(this.createAvatar(), stack);
+      this.chatScreen.appendChild(row);
+    }
+
+    if (targetScene === this.currentScene) this.scrollBottom();
     return message;
   }
 
-  addFeedbackActions(stack, message) {
+  addFeedbackActions(stack, message, targetScene) {
     const actions = document.createElement('div');
     actions.className = 'feedback-actions';
 
@@ -267,30 +349,72 @@ class ChatApp {
     const yes = document.createElement('button');
     yes.type = 'button';
     yes.textContent = '已解决';
-    yes.addEventListener('click', () => {
+    yes.addEventListener('click', async () => {
       message.feedbackStatus = 'resolved';
-      actions.innerHTML = '<span class="feedback-state">已标记为解决</span>';
+      this.syncFeedbackStatus(targetScene, message);
+      const result = await this.handleStandalonePersistenceResult(
+        await this.persistCurrentSession(targetScene),
+        targetScene
+      );
+      if (result.reason === 'conflict') return;
+      this.replaceFeedbackState(actions, '已标记为解决');
     });
     const no = document.createElement('button');
     no.type = 'button';
     no.textContent = '未解决';
-    no.addEventListener('click', () => {
+    no.addEventListener('click', async () => {
       message.feedbackStatus = 'unresolved';
-      actions.innerHTML = `<span class="feedback-state">${message.followupDepth >= 1 ? '转入人工协助' : '正在补充回答…'}</span>`;
-      if (message.followupDepth >= 1) this.showHumanHandoff(message);
-      else this.requestSecondAnswer(message);
+      this.syncFeedbackStatus(targetScene, message);
+      this.replaceFeedbackState(actions, message.followupDepth >= 1 ? '转入人工协助' : '正在补充回答…');
+      if (message.followupDepth >= 1) {
+        const result = await this.handleStandalonePersistenceResult(
+          await this.persistCurrentSession(targetScene),
+          targetScene
+        );
+        if (result.reason === 'conflict') return;
+        this.showHumanHandoff(message);
+      } else {
+        await this.requestSecondAnswer(message, targetScene);
+      }
     });
     actions.append(label, yes, no);
     stack.appendChild(actions);
   }
 
-  requestSecondAnswer(message) {
+  syncFeedbackStatus(targetScene, message) {
+    const storedMessage = this.sessions[targetScene]
+      .find(candidate => candidate.id === message.id);
+    if (storedMessage) storedMessage.feedbackStatus = message.feedbackStatus;
+  }
+
+  replaceFeedbackState(actions, text) {
+    const state = document.createElement('span');
+    state.className = 'feedback-state';
+    state.textContent = text;
+    actions.replaceChildren(state);
+  }
+
+  async requestSecondAnswer(message, requestScene = this.currentScene) {
     if (this.isProcessing) return;
     const prompt = '这个回答没有解决我的问题。请回到我原来的问题，补充明确的制度依据、适用条件、具体步骤和可行的替代方案；不确定的信息请直接说明。';
     this.beginProcessing();
-    this.addUserMessage(prompt);
-    this.showTyping();
-    this.fetchAIReply(prompt, { followupDepth: (message.followupDepth || 0) + 1 });
+    this.notePersistenceResult(await this.persistCurrentSession(requestScene));
+    if (this.getLastPersistenceResult()?.reason === 'conflict') {
+      await this.cancelRoundForConflict();
+      return;
+    }
+    await this.addUserMessage(prompt, { scene: requestScene });
+    if (this.getLastPersistenceResult()?.reason === 'conflict') {
+      await this.cancelRoundForConflict();
+      return;
+    }
+    const requestRevision = this.getSceneRevision(requestScene);
+    if (requestScene === this.currentScene) this.showTyping();
+    void this.fetchAIReply(prompt, {
+      followupDepth: (message.followupDepth || 0) + 1,
+      scene: requestScene,
+      revision: requestRevision,
+    });
   }
 
   showHumanHandoff() {
@@ -332,7 +456,7 @@ class ChatApp {
     }
   }
 
-  handleSend() {
+  async handleSend() {
     const now = Date.now();
     if (now - this.lastSendTime < this.debounceDelay) return;
     if (this.isProcessing) {
@@ -340,66 +464,126 @@ class ChatApp {
       return;
     }
 
+    this.cancelVoiceInput();
     const text = this.msgInput.value.trim();
     if (!text) return;
+    const requestScene = this.currentScene;
     this.lastSendTime = now;
     this.beginProcessing();
-    this.addUserMessage(text);
+    await this.addUserMessage(text, { scene: requestScene });
+    if (this.getLastPersistenceResult()?.reason === 'conflict') {
+      await this.cancelRoundForConflict();
+      return;
+    }
+    const requestRevision = this.getSceneRevision(requestScene);
     this.msgInput.value = '';
     this.updateComposer();
 
     if (isCrisis(text)) {
-      this.addCrisisSupportMessage();
+      await this.addCrisisSupportMessage(requestScene);
       this.showCrisisModal();
+      this.finishProcessingRound();
       this.resetProcessingState();
       return;
     }
 
     this.showTyping();
-    this.fetchAIReply(text);
+    void this.fetchAIReply(text, { scene: requestScene, revision: requestRevision });
   }
 
   beginProcessing() {
+    this.cancelVoiceInput();
     this.isProcessing = true;
+    this.roundSequence = (Number.isSafeInteger(this.roundSequence) ? this.roundSequence : 0) + 1;
+    this.currentRound = this.roundSequence;
+    this.roundSaveFailed = false;
+    this.roundNetworkFailed = false;
+    this.roundNetworkMessage = '';
+    this.roundPersistenceReason = '';
+    this.roundConflict = false;
+    this.activeRequest = null;
+    this.lastPersistenceResult = null;
     this.sendBtn.disabled = true;
     this.msgInput.disabled = true;
+    if (this.voiceBtn) this.voiceBtn.disabled = true;
   }
 
   async fetchAIReply(text, options = {}) {
+    const requestScene = Number.isInteger(options.scene) ? options.scene : this.currentScene;
+    const requestRevision = Number.isSafeInteger(options.revision)
+      ? options.revision
+      : this.getSceneRevision(requestScene);
+    this.activeRequest = {
+      scene: requestScene,
+      revision: requestRevision,
+      round: this.currentRound,
+    };
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 75000);
     try {
-      const history = this.sessions[this.currentScene]
+      const beforeNormalization = JSON.stringify(this.sessions[requestScene]);
+      this.sessions[requestScene] = this.localStore.normalizeSession(this.sessions[requestScene]);
+      if (
+        requestScene === this.currentScene
+        && beforeNormalization !== JSON.stringify(this.sessions[requestScene])
+      ) {
+        this.renderCurrentSession();
+        this.typingEl = null;
+        if (this.isProcessing) this.showTyping();
+      }
+      const history = this.sessions[requestScene]
         .filter(message => message.who === 'user' || message.who === 'ai')
         .slice(-20)
         .map(message => ({
           role: message.who === 'user' ? 'user' : 'assistant',
-          content: message.who === 'user' ? message.text : this.replyToPlainText(message.parts),
+          content: (message.who === 'user'
+            ? message.text
+            : this.replyToPlainText(message.parts)).slice(0, 8_000),
         }))
         .filter(message => message.content.trim());
 
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scene: this.currentScene, history }),
+        body: JSON.stringify({
+          scene: requestScene,
+          history,
+          profile: requestScene === 1 ? this.profile : undefined,
+        }),
         signal: controller.signal,
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.error) throw new Error(data.error || `服务器错误:${response.status}`);
+      if (!this.isRequestRevisionCurrent(requestScene, requestRevision)) {
+        this.removeTyping();
+        return;
+      }
 
       this.removeTyping();
-      this.addAIMessage(
+      await this.addAIMessage(
         { parts: [{ type: 'text', text: data.reply }] },
-        { followupDepth: options.followupDepth || 0 }
+        { followupDepth: options.followupDepth || 0, scene: requestScene }
       );
+      await this.resolveReplyPersistenceConflict(requestScene);
     } catch (error) {
       console.error('获取AI回复失败:', error.name);
       this.removeTyping();
-      this.toast(error.name === 'AbortError' ? '回答超时，请稍后重试' : '获取回复失败，请稍后重试');
-      this.addAIMessage(getAIReply(this.currentScene, text), { feedbackEligible: false });
+      if (!this.isRequestRevisionCurrent(requestScene, requestRevision)) return;
+      this.roundNetworkFailed = true;
+      this.roundNetworkMessage = error.name === 'AbortError'
+        ? '获取回复失败（回答超时），请稍后重试'
+        : '获取回复失败，请稍后重试';
+      await this.addAIMessage(getAIReply(requestScene, text), {
+        feedbackEligible: false,
+        scene: requestScene,
+      });
+      await this.resolveReplyPersistenceConflict(requestScene);
     } finally {
       clearTimeout(timeout);
+      this.finishProcessingRound();
       this.resetProcessingState();
+      this.activeRequest = null;
+      this.flushPendingProfileRender();
     }
   }
 
@@ -424,10 +608,96 @@ class ChatApp {
     this.typingEl = null;
   }
 
+  notePersistenceResult(result) {
+    const persistenceResult = this.normalizePersistenceResult(result);
+    this.lastPersistenceResult = persistenceResult;
+    this.roundSaveFailed = persistenceResult.ok === false && persistenceResult.reason !== 'conflict';
+    if (this.roundSaveFailed) this.roundPersistenceReason = persistenceResult.reason || 'unavailable';
+  }
+
+  normalizePersistenceResult(result) {
+    if (result && typeof result === 'object' && typeof result.ok === 'boolean') return result;
+    if (result === true) return { ok: true, revision: null };
+    return { ok: false, reason: 'unavailable' };
+  }
+
+  getLastPersistenceResult() {
+    return this.normalizePersistenceResult(this.lastPersistenceResult);
+  }
+
+  async cancelRoundForConflict() {
+    const conflict = this.getLastPersistenceResult();
+    this.applyLocalState(conflict.state || await this.localStore.load());
+    if (this.currentScene !== 2) this.renderCurrentSession();
+    this.roundSaveFailed = false;
+    this.roundNetworkFailed = false;
+    this.roundNetworkMessage = '';
+    this.roundConflict = false;
+    this.activeRequest = null;
+    this.toast('对话已在其他页面更新，请重试');
+    this.resetProcessingState();
+  }
+
+  async resolveReplyPersistenceConflict(requestScene) {
+    const conflict = this.getLastPersistenceResult();
+    if (conflict.reason !== 'conflict') return false;
+    this.applyLocalState(conflict.state || await this.localStore.load());
+    if (requestScene === this.currentScene && requestScene !== 2) this.renderCurrentSession();
+    this.roundSaveFailed = false;
+    this.roundNetworkFailed = false;
+    this.roundNetworkMessage = '';
+    this.roundConflict = true;
+    return true;
+  }
+
+  async handleStandalonePersistenceResult(result, targetScene) {
+    const persistenceResult = this.normalizePersistenceResult(result);
+    if (persistenceResult.ok) return persistenceResult;
+    if (persistenceResult.reason === 'conflict') {
+      this.applyLocalState(persistenceResult.state || await this.localStore.load());
+      if (targetScene === this.currentScene && targetScene !== 2) this.renderCurrentSession();
+      this.toast('对话已在其他页面更新，请重试');
+      return persistenceResult;
+    }
+    this.toast(this.persistenceFailureMessage(persistenceResult.reason));
+    return persistenceResult;
+  }
+
+  persistenceFailureMessage(reason) {
+    if (reason === 'locking-unsupported') return '当前浏览器不支持安全的本地保存';
+    if (reason === 'lock-failed') return '本地保存暂不可用';
+    return '对话未能保存';
+  }
+
+  finishProcessingRound() {
+    let message = '';
+    if (this.roundConflict) {
+      message = '对话已在其他页面更新，请重试';
+    } else if (this.roundNetworkFailed) {
+      message = this.roundNetworkMessage;
+      if (this.roundSaveFailed) message += '；当前对话未保存';
+    } else if (this.roundSaveFailed) {
+      message = this.persistenceFailureMessage(this.roundPersistenceReason);
+    }
+    if (message) this.toast(message);
+    this.roundSaveFailed = false;
+    this.roundNetworkFailed = false;
+    this.roundNetworkMessage = '';
+    this.roundPersistenceReason = '';
+    this.roundConflict = false;
+  }
+
   resetProcessingState() {
     this.isProcessing = false;
     this.sendBtn.disabled = false;
     this.msgInput.disabled = false;
+    if (this.voiceBtn) {
+      if (this.voiceController?.supported) {
+        this.voiceBtn.disabled = this.isProcessing;
+      } else {
+        this.voiceBtn.disabled = true;
+      }
+    }
     this.updateComposer();
     if (this.currentView === 'chat') this.msgInput.focus();
   }
@@ -439,12 +709,72 @@ class ChatApp {
     this.sendBtn.classList.toggle('ready', hasText && !this.isProcessing);
   }
 
-  addCrisisSupportMessage() {
-    this.addAIMessage({ parts: [{
+  setupVoiceInput() {
+    this.voiceController = createVoiceController({
+      root: window,
+      onTranscript: text => this.acceptVoiceTranscript(text),
+      onState: state => this.updateVoiceState(state),
+      onError: message => this.toast(message),
+    });
+
+    if (!this.voiceController.supported) {
+      this.voiceBtn.disabled = true;
+      this.voiceBtn.title = '当前浏览器不支持语音转文字';
+      this.voiceStatus.textContent = '当前浏览器不支持语音转文字，可继续使用文本输入。';
+    }
+
+    this.voiceBtn.addEventListener('click', () => {
+      if (this.isProcessing || !this.voiceController.supported) return;
+      this.voiceController.toggle();
+    });
+  }
+
+  acceptVoiceTranscript(text) {
+    if (this.currentView !== 'chat' || this.isProcessing) return;
+    const transcript = String(text || '').trim();
+    if (!transcript) return;
+    const configuredLimit = Number(this.msgInput.maxLength);
+    const inputLimit = Number.isSafeInteger(configuredLimit) && configuredLimit > 0
+      ? Math.min(configuredLimit, 8_000)
+      : 8_000;
+    const existing = this.msgInput.value;
+    const available = inputLimit - existing.length;
+    const minimumAddition = existing ? 2 : 1;
+    if (available < minimumAddition) {
+      this.msgInput.focus();
+      this.toast('输入内容已达上限，请先精简后再使用语音输入');
+      return;
+    }
+    const addition = `${existing ? '，' : ''}${transcript}`.slice(0, available);
+    this.msgInput.value = existing + addition;
+    this.updateComposer();
+    this.msgInput.focus();
+    this.toast('语音已转为文字，请确认后发送');
+  }
+
+  updateVoiceState(state) {
+    if (!this.voiceBtn) return;
+    const listening = state === 'listening';
+    this.voiceBtn.classList.toggle('listening', listening);
+    this.voiceBtn.setAttribute('aria-pressed', String(listening));
+    this.voiceBtn.setAttribute('aria-label', listening ? '停止语音输入' : '开始语音输入');
+    if (this.voiceLabel) this.voiceLabel.textContent = listening ? '停' : '话';
+    this.voiceStatus.textContent = listening
+      ? '正在听……再次点击停止'
+      : '语音输入已停止';
+  }
+
+  cancelVoiceInput() {
+    if (!this.voiceController?.supported) return false;
+    return this.voiceController.cancel();
+  }
+
+  async addCrisisSupportMessage(requestScene = this.currentScene) {
+    await this.addAIMessage({ parts: [{
       type: 'text',
       coral: true,
       text: '我注意到你提到了自杀、自伤或活不下去，我很担心你现在的安全。请先不要独处，立即远离可能伤害自己的物品，并联系一位你信任的人陪着你。\n\n如果危险正在发生、你已经采取行动或已经受伤，请立即拨打110或120。你也可以拨打全国心理援助热线12356，或安徽精神卫生中心24小时心理援助热线0551-63666903。\n\n如果方便，请只告诉我：你现在是“安全”，还是“有危险”？'
-    }] }, { feedbackEligible: false });
+    }] }, { feedbackEligible: false, scene: requestScene });
   }
 
   showCrisisModal() {
@@ -468,6 +798,327 @@ class ChatApp {
       const count = session.filter(message => message.who === 'user').length;
       document.getElementById(`profileStat${index}`).textContent = String(count);
     });
+  }
+
+  getCurrentSceneConfig() {
+    const scene = SCENES[this.currentScene];
+    if (this.currentScene !== 1) return scene;
+    const career = getCareerTrack(this.profile.grade);
+    return {
+      ...scene,
+      welcome: career.welcome,
+      tabs: career.tabs,
+      version: career.version,
+    };
+  }
+
+  renderProfileForm() {
+    this.gradeSelect.value = this.profile.grade;
+    this.majorInput.value = this.profile.major;
+    this.goalInput.value = this.profile.goal;
+    this.renderCareerTrack();
+  }
+
+  async handleProfileSubmit(event) {
+    event.preventDefault();
+    if (this.isProcessing) {
+      this.toast('请等待当前回答完成后再保存资料');
+      return;
+    }
+    const nextProfile = {
+      grade: this.gradeSelect.value,
+      major: this.majorInput.value.trim().slice(0, 40),
+      goal: this.goalInput.value.trim().slice(0, 120),
+    };
+
+    const result = this.normalizePersistenceResult(await this.localStore.saveProfile(nextProfile));
+    if (!result.ok) {
+      const message = result.reason === 'locking-unsupported'
+        ? '当前浏览器不支持安全的本地保存'
+        : result.reason === 'lock-failed'
+          ? '本地保存暂不可用'
+          : '本地资料保存失败，请检查浏览器存储设置';
+      this.toast(message);
+      return;
+    }
+
+    this.profile = result.profile || nextProfile;
+    this.renderProfileForm();
+    if (this.currentScene === 1) this.renderCurrentSession();
+    this.toast('本地资料已保存');
+  }
+
+  renderCareerTrack(grade = this.profile.grade) {
+    const track = getCareerTrack(grade);
+    const heading = document.createElement('strong');
+    heading.textContent = `学业与生涯成长 · ${track.version}`;
+    const description = document.createElement('p');
+    description.textContent = track.topics.length
+      ? `当前建议重点：${track.topics.join('、')}`
+      : '未选择年级，将使用通用版学业与生涯建议。';
+    this.careerTrack.replaceChildren(heading, description);
+  }
+
+  async persistCurrentSession(targetScene = this.currentScene) {
+    if (targetScene === 2) {
+      const result = { ok: true, revision: null };
+      this.lastPersistenceResult = result;
+      return result;
+    }
+    const normalized = this.localStore.normalizeSession(this.sessions[targetScene]);
+    const saved = await this.localStore.saveSession(
+      targetScene,
+      normalized,
+      this.getSceneRevision(targetScene)
+    );
+    const result = this.normalizePersistenceResult(saved);
+    this.lastPersistenceResult = result;
+    if (!result.ok) return saved;
+
+    this.sessions[targetScene] = normalized;
+    if (Number.isSafeInteger(result.revision)) {
+      this.sessionRevisions[targetScene] = result.revision;
+    }
+    return saved;
+  }
+
+  getSceneRevision(sceneIndex) {
+    if (sceneIndex === 2) return null;
+    const revision = this.sessionRevisions?.[sceneIndex];
+    return Number.isSafeInteger(revision) && revision >= 0 ? revision : null;
+  }
+
+  isRequestRevisionCurrent(sceneIndex, requestRevision) {
+    if (sceneIndex === 2) return true;
+    return requestRevision === this.getSceneRevision(sceneIndex);
+  }
+
+  applyLocalState(localState) {
+    this.profile = localState.profile;
+    this.sessions[0] = localState.sessions[0];
+    this.sessions[1] = localState.sessions[1];
+    this.sessions[3] = localState.sessions[3];
+    this.sessionRevisions = localState.sessionRevisions;
+  }
+
+  async handleStorageEvent(event) {
+    const isExternalClear = event.key === null;
+    if (!isExternalClear && event.key !== this.localStore.storageKey) return;
+
+    const previousProfile = JSON.stringify(this.profile);
+    const previousSessions = {
+      0: JSON.stringify(this.sessions[0]),
+      1: JSON.stringify(this.sessions[1]),
+      3: JSON.stringify(this.sessions[3]),
+    };
+    const previousRevisions = { ...this.sessionRevisions };
+    let localState;
+    try {
+      if (isExternalClear) {
+        const reset = this.normalizePersistenceResult(
+          await this.localStore.resetAfterExternalClear()
+        );
+        if (!reset.ok) {
+          this.toast(this.persistenceFailureMessage(reset.reason));
+          return;
+        }
+        localState = reset.state;
+      } else {
+        localState = await this.localStore.load();
+      }
+    } catch (_error) {
+      this.toast('本地保存暂不可用');
+      return;
+    }
+    const profileChanged = previousProfile !== JSON.stringify(localState.profile);
+    const changedScenes = [0, 1, 3].filter(sceneIndex => (
+      previousSessions[sceneIndex] !== JSON.stringify(localState.sessions[sceneIndex])
+      || previousRevisions[sceneIndex] !== localState.sessionRevisions[sceneIndex]
+    ));
+
+    if (
+      this.isProcessing
+      && this.activeRequest
+      && this.activeRequest.round === this.currentRound
+      && this.activeRequest.scene !== 2
+      && this.activeRequest.revision !== localState.sessionRevisions[this.activeRequest.scene]
+    ) {
+      this.roundConflict = true;
+      this.roundSaveFailed = false;
+      this.roundNetworkFailed = false;
+      this.roundNetworkMessage = '';
+    }
+
+    this.applyLocalState(localState);
+
+    let renderedCurrentSession = false;
+    const shouldDeferGrowthRender = profileChanged
+      && this.isProcessing
+      && this.currentScene === 1
+      && this.currentView === 'chat';
+    if (
+      this.currentScene !== 2
+      && changedScenes.includes(this.currentScene)
+      && !shouldDeferGrowthRender
+    ) {
+      this.renderCurrentSession();
+      renderedCurrentSession = true;
+    }
+    if (profileChanged && this.currentScene === 1 && this.currentView === 'chat') {
+      if (this.isProcessing && !renderedCurrentSession) {
+        this.pendingProfileRender = true;
+      } else if (!renderedCurrentSession) {
+        this.renderCurrentSession();
+        renderedCurrentSession = true;
+      }
+    }
+    if (profileChanged) this.renderProfileForm();
+    if (this.currentView === 'profile') {
+      this.updateProfileStats();
+      this.renderHistoryList();
+    } else if (isExternalClear) {
+      this.renderHistoryList();
+    }
+  }
+
+  flushPendingProfileRender() {
+    if (!this.pendingProfileRender) return;
+    if (this.currentScene !== 1 || this.currentView !== 'chat') return;
+    this.renderCurrentSession();
+  }
+
+  renderHistoryList() {
+    const sceneIndexes = [0, 1, 3];
+    this.historyList.replaceChildren();
+
+    sceneIndexes.forEach(sceneIndex => {
+      const session = this.sessions[sceneIndex];
+      const sceneName = SCENES[sceneIndex].name;
+      const item = document.createElement('article');
+      item.className = 'history-item';
+
+      const summary = document.createElement('div');
+      summary.className = 'history-summary';
+      const title = document.createElement('strong');
+      title.textContent = sceneName;
+      const count = document.createElement('span');
+      count.textContent = `${session.length}条消息`;
+      const recent = [...session].reverse().find(message => message.who === 'user');
+      const excerpt = document.createElement('p');
+      excerpt.textContent = recent
+        ? this.summarizeHistoryQuestion(recent.text)
+        : '暂无本地记录';
+      summary.append(title, count, excerpt);
+
+      const actions = document.createElement('div');
+      actions.className = 'history-actions';
+      const restore = document.createElement('button');
+      restore.type = 'button';
+      restore.textContent = '恢复对话';
+      restore.setAttribute('aria-label', `恢复${sceneName}对话`);
+      restore.disabled = session.length === 0;
+      restore.addEventListener('click', () => this.restoreHistory(sceneIndex));
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'history-delete';
+      remove.textContent = '删除';
+      remove.setAttribute('aria-label', `删除${sceneName}本地历史`);
+      remove.disabled = session.length === 0;
+      remove.addEventListener('click', () => this.deleteHistory(sceneIndex));
+      actions.append(restore, remove);
+
+      item.append(summary, actions);
+      this.historyList.appendChild(item);
+    });
+  }
+
+  summarizeHistoryQuestion(text) {
+    const compact = text.trim().replace(/\s+/g, ' ');
+    return compact.length > 48 ? `${compact.slice(0, 48)}…` : compact;
+  }
+
+  restoreHistory(sceneIndex) {
+    if (this.isProcessing) {
+      this.toast('请等待当前回答完成后再恢复对话');
+      return;
+    }
+    this.currentScene = sceneIndex;
+    this.renderCurrentSession();
+    this.navigateTo('chat');
+  }
+
+  async deleteHistory(sceneIndex) {
+    if (this.isProcessing) {
+      this.toast('请等待当前回答完成后再删除历史');
+      return;
+    }
+    if (!window.confirm('只删除当前设备上的该模块历史，是否继续？')) return;
+    const result = this.normalizePersistenceResult(
+      await this.localStore.clearSession(sceneIndex, this.getSceneRevision(sceneIndex))
+    );
+    if (!result.ok) {
+      if (result.reason === 'conflict') {
+        this.applyLocalState(result.state || await this.localStore.load());
+        if (this.currentScene === sceneIndex) this.renderCurrentSession();
+        this.updateProfileStats();
+        this.renderHistoryList();
+        this.toast('对话已在其他页面更新，请重试');
+        return;
+      }
+      this.toast(result.reason === 'locking-unsupported'
+        ? '当前浏览器不支持安全的本地保存'
+        : result.reason === 'lock-failed'
+          ? '本地保存暂不可用'
+          : '本地历史删除失败');
+      return;
+    }
+
+    this.sessions[sceneIndex] = [];
+    this.sessionRevisions[sceneIndex] = result.revision;
+    if (this.currentScene === sceneIndex) this.renderCurrentSession();
+    this.updateProfileStats();
+    this.renderHistoryList();
+    this.historyList.tabIndex = -1;
+    this.historyList.focus();
+    this.toast('该模块本地历史已删除');
+  }
+
+  async clearAllHistory() {
+    if (this.isProcessing) {
+      this.toast('请等待当前回答完成后再清空历史');
+      return;
+    }
+    if (!window.confirm('将清除当前设备上的校园、成长和事务历史，是否继续？')) return;
+    const result = this.normalizePersistenceResult(
+      await this.localStore.clearAllSessions({ ...this.sessionRevisions })
+    );
+    if (!result.ok) {
+      if (result.reason === 'conflict') {
+        this.applyLocalState(result.state || await this.localStore.load());
+        if (this.currentScene !== 2) this.renderCurrentSession();
+        this.updateProfileStats();
+        this.renderHistoryList();
+        this.toast('对话已在其他页面更新，请重试');
+        return;
+      }
+      this.toast(result.reason === 'locking-unsupported'
+        ? '当前浏览器不支持安全的本地保存'
+        : result.reason === 'lock-failed'
+          ? '本地保存暂不可用'
+          : '本地历史清空失败');
+      return;
+    }
+
+    this.sessions[0] = [];
+    this.sessions[1] = [];
+    this.sessions[3] = [];
+    this.sessionRevisions = result.revisions;
+    if (this.currentScene !== 2) this.renderCurrentSession();
+    this.updateProfileStats();
+    this.renderHistoryList();
+    this.historyList.tabIndex = -1;
+    this.historyList.focus();
+    this.toast('本地历史已清空');
   }
 
   replyToPlainText(parts = []) {

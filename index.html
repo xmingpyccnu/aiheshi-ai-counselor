@@ -19,7 +19,9 @@
             <img class="s-avatar" src="assets/A_cute_2D_cartoon_style_Chines_2026-07-10T15-22-43.png" alt="爱·合师">
             <h1 class="s-title">爱·合师</h1>
             <p class="s-sub">你的校园AI辅导员</p>
-            <button class="s-btn" id="enterBtn">开始使用</button>
+            <button class="s-btn" id="enterBtn" aria-describedby="splashStatus" disabled>开始使用</button>
+            <p id="splashStatus" class="splash-status" role="status" aria-live="polite">正在初始化服务，请稍候…若长时间无响应，请确认浏览器已启用JavaScript。
+            </p>
         </div>
 
         <main id="app" class="app hidden">
@@ -111,8 +113,13 @@
                 </button>
 
                 <div class="input-bar">
+                    <p id="voiceNotice" class="voice-privacy-note">语音识别由浏览器或系统服务处理，可能需要联网；本应用不保存音频，可用性因浏览器而异。</p>
                     <label for="msgInput" class="sr-only">输入消息</label>
-                    <textarea id="msgInput" placeholder="描述你的问题…" rows="1" autocomplete="off" spellcheck="false"></textarea>
+                    <button id="voiceBtn" class="voice-input" type="button" aria-describedby="voiceNotice voiceStatus" aria-label="开始语音输入" aria-pressed="false">
+                        <span aria-hidden="true">话</span>
+                    </button>
+                    <span id="voiceStatus" class="voice-status" role="status" aria-live="polite"></span>
+                    <textarea id="msgInput" maxlength="8000" placeholder="描述你的问题…" rows="1" autocomplete="off" spellcheck="false"></textarea>
                     <button class="send" id="sendBtn" aria-label="发送消息">
                         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20.5 22 12 3 3.5V10l13 2-13 2z"/></svg>
                     </button>
@@ -131,23 +138,54 @@
                         <span class="visitor-badge">访客</span>
                     </section>
 
+                    <section class="profile-block local-profile-block">
+                        <div class="section-heading compact"><div><span>01 / LOCAL PROFILE</span><h2>本地资料</h2></div></div>
+                        <form id="profileForm" class="profile-form">
+                            <label for="gradeSelect">当前年级</label>
+                            <select id="gradeSelect" name="grade">
+                                <option value="">暂不选择</option>
+                                <option value="freshman">大一</option>
+                                <option value="sophomore">大二</option>
+                                <option value="junior">大三</option>
+                                <option value="senior">大四</option>
+                            </select>
+
+                            <label for="majorInput">专业</label>
+                            <input id="majorInput" name="major" type="text" maxlength="40" autocomplete="off" placeholder="例如：汉语言文学">
+
+                            <label for="goalInput">当前目标</label>
+                            <textarea id="goalInput" name="goal" maxlength="120" rows="3" placeholder="例如：这学期准备教师资格证和教育实习"></textarea>
+
+                            <div id="careerTrack" class="career-track" aria-live="polite"></div>
+                            <button class="profile-save" type="submit">保存到当前设备</button>
+                        </form>
+                        <p class="local-only-note">资料仅保存在当前设备，不等于学校账号。在成长模块提问时，这些资料会随当次请求发送给AI。</p>
+                    </section>
+
                     <section class="profile-block">
                         <div class="section-heading compact"><div><span>02 / HISTORY</span><h2>对话概览</h2></div></div>
                         <div class="history-stats">
                             <div><strong id="profileStat0">0</strong><span>校园</span></div>
                             <div><strong id="profileStat1">0</strong><span>成长</span></div>
-                            <div><strong id="profileStat2">0</strong><span>心理</span></div>
+                            <div><strong id="profileStat2">0</strong><span>心理（本次）</span></div>
                             <div><strong id="profileStat3">0</strong><span>事务</span></div>
                         </div>
                     </section>
 
-                    <section class="profile-block future-list">
-                        <div><span>历史记录</span><small>当前设备会话</small></div>
-                        <div><span>办理进度</span><small>待学校系统接入</small></div>
-                        <div><span>年级与专业</span><small>待账户功能接入</small></div>
+                    <section class="profile-block history-block">
+                        <div class="section-heading compact history-heading">
+                            <div><span>03 / LOCAL ARCHIVE</span><h2>本地历史</h2></div>
+                            <button id="clearAllHistory" class="clear-history" type="button">清空全部</button>
+                        </div>
+                        <div id="historyList" class="history-list" aria-live="polite"></div>
+                        <p class="local-only-note">心理对话不保存到本地历史，刷新或关闭页面后不恢复。</p>
                     </section>
 
-                    <p class="privacy-note">心理对话与普通服务记录将在账户阶段分开管理。本原型不会把当前会话保存到服务器数据库。</p>
+                    <section class="profile-block future-list">
+                        <div><span>办理进度</span><small>待学校系统接入</small></div>
+                    </section>
+
+                    <p class="privacy-note">本原型不会把当前会话保存到服务器数据库。</p>
                 </div>
             </section>
 
@@ -190,6 +228,9 @@
     </div>
 
     <script src="js/scenes.js"></script>
+    <script src="js/storage.js"></script>
+    <script src="js/profile.js"></script>
+    <script src="js/voice.js"></script>
     <script src="js/chat.js"></script>
     <script src="js/app.js"></script>
 </body>

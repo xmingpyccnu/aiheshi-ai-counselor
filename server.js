@@ -106,7 +106,56 @@ function validateChatPayload(payload) {
     return { role: message.role, content };
   });
 
-  return { scene, history: normalizedHistory };
+  const { ok, profile } = validateProfile(payload.profile);
+  if (!ok) {
+    throw new HttpError(400, '请求参数格式错误');
+  }
+
+  return { scene, history: normalizedHistory, profile };
+}
+
+function validateProfile(value) {
+  if (value === undefined) return { ok: true, profile: null };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, profile: null };
+  }
+
+  const grade = Object.hasOwn(value, 'grade') ? value.grade : '';
+  const major = Object.hasOwn(value, 'major') ? value.major : '';
+  const goal = Object.hasOwn(value, 'goal') ? value.goal : '';
+  const allowedGrades = new Set(['', 'freshman', 'sophomore', 'junior', 'senior']);
+
+  if (typeof grade !== 'string' || !allowedGrades.has(grade)) {
+    return { ok: false, profile: null };
+  }
+  if (typeof major !== 'string' || typeof goal !== 'string') {
+    return { ok: false, profile: null };
+  }
+
+  const trimmedMajor = major.trim();
+  const trimmedGoal = goal.trim();
+  if (trimmedMajor.length > 40 || trimmedGoal.length > 120) {
+    return { ok: false, profile: null };
+  }
+
+  return {
+    ok: true,
+    profile: {
+      grade,
+      major: normalizeProfileText(trimmedMajor),
+      goal: normalizeProfileText(trimmedGoal),
+    },
+  };
+}
+
+function normalizeProfileText(value) {
+  return value
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
+    .replace(/[\u202A-\u202E\u2066-\u2069]/g, '')
+    .replace(/</g, '＜')
+    .replace(/>/g, '＞')
+    .replace(/\s+/gu, ' ')
+    .trim();
 }
 
 function readJsonBody(req) {
@@ -188,9 +237,9 @@ function createAppServer({ agentLoop: runAgent = agentLoop } = {}) {
         }
 
         const payload = await readJsonBody(req);
-        const { scene, history } = validateChatPayload(payload);
+        const { scene, history, profile } = validateChatPayload(payload);
         console.log(`[API] 场景${scene} 收到${history.length}条历史`);
-        const reply = await runAgent(scene, history);
+        const reply = await runAgent(scene, history, scene === 1 ? profile : null);
         if (typeof reply !== 'string' || !reply.trim()) {
           throw new Error('Agent返回了空回复');
         }
