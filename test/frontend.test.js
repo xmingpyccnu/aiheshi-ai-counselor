@@ -14,6 +14,12 @@ test('前端发送带角色的结构化历史', () => {
   assert.doesNotMatch(source, /\.map\(msg =>\s*msg\.who === 'user'\s*\? msg\.text/);
 });
 
+test('聊天接口使用相对路径以支持部署在子目录', () => {
+  const source = read('js/chat.js');
+  assert.match(source, /fetch\('api\/chat'/);
+  assert.doesNotMatch(source, /fetch\('\/api\/chat'/);
+});
+
 test('心理提示词要求直接回应风险和立即转介', () => {
   const source = read('agent_prompts.js');
   assert.match(source, /直接回应风险/);
