@@ -292,7 +292,7 @@ test('本轮后续完整会话保存成功时不误报失败', async () => {
   assert.deepEqual(app.toasts, []);
 });
 
-test('网络失败提示不被本地存储失败覆盖', async () => {
+test('网络与存储同时失败时用一次toast完整说明', async () => {
   const { ChatApp } = loadChatApp(async () => { throw new Error('offline'); });
   const app = createApp(ChatApp, 0);
   app.localStore = {
@@ -309,7 +309,114 @@ test('网络失败提示不被本地存储失败覆盖', async () => {
   ChatApp.prototype.handleSend.call(app);
   await requestTask;
 
+  assert.deepEqual(app.toasts, ['获取回复失败，请稍后重试；当前对话未保存']);
+});
+
+test('仅网络失败时保留明确的获取回复提示', async () => {
+  const { ChatApp } = loadChatApp(async () => { throw new Error('offline'); });
+  const app = createApp(ChatApp, 0);
+  app.localStore = {
+    normalizeSession: messages => messages,
+    saveSession: () => true,
+  };
+  installMessageHarness(app, ChatApp);
+  app.msgInput.value = '校园问题';
+  let requestTask;
+  const fetchAIReply = ChatApp.prototype.fetchAIReply.bind(app);
+  app.fetchAIReply = (...args) => { requestTask = fetchAIReply(...args); };
+
+  ChatApp.prototype.handleSend.call(app);
+  await requestTask;
+
   assert.deepEqual(app.toasts, ['获取回复失败，请稍后重试']);
+});
+
+test('scene2超长AI回复进入下一次请求前会统一规范化', async () => {
+  const requestBodies = [];
+  let requestCount = 0;
+  const { ChatApp } = loadChatApp(async (_url, options) => {
+    requestBodies.push(JSON.parse(options.body));
+    requestCount += 1;
+    return {
+      ok: true,
+      json: async () => ({ reply: requestCount === 1 ? '心'.repeat(9_000) : '继续回答' }),
+    };
+  });
+  const app = createApp(ChatApp, 0);
+  const normalizer = createLocalStateStore({ getItem: () => null, setItem() {} });
+  app.localStore = {
+    normalizeSession: normalizer.normalizeSession,
+    saveSession() { throw new Error('scene2不应持久化'); },
+  };
+  app.nextMessageId = () => 'ai-scene2-long';
+
+  await ChatApp.prototype.fetchAIReply.call(app, '第一次', { scene: 2 });
+  assert.equal(app.sessions[2][0].parts[0].text.length, 8_000);
+
+  app.addAIMessage = () => {};
+  await ChatApp.prototype.fetchAIReply.call(app, '继续', { scene: 2 });
+  assert.ok(requestBodies[1].history.length <= 40);
+  assert.ok(requestBodies[1].history.every(message => message.content.length <= 8_000));
+});
+
+test('非心理场景0、1、3存储失败后超长AI回复也不进入下次请求', async () => {
+  for (const scene of [0, 1, 3]) {
+    let requestBody;
+    const { ChatApp } = loadChatApp(async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return { ok: true, json: async () => ({ reply: '继续回答' }) };
+    });
+    const app = createApp(ChatApp, scene === 0 ? 1 : 0);
+    const normalizer = createLocalStateStore({ getItem: () => null, setItem() {} });
+    app.localStore = {
+      normalizeSession: normalizer.normalizeSession,
+      saveSession: () => false,
+    };
+    app.nextMessageId = () => `ai-scene${scene}-long`;
+
+    ChatApp.prototype.addAIMessage.call(app, {
+      parts: [{ type: 'text', text: '长'.repeat(9_000) }],
+    }, { scene, feedbackEligible: false });
+    assert.equal(app.sessions[scene][0].parts[0].text.length, 8_000);
+
+    app.addAIMessage = () => {};
+    await ChatApp.prototype.fetchAIReply.call(app, '继续', { scene });
+    assert.ok(requestBody.history.length <= 40);
+    assert.ok(requestBody.history.every(message => message.content.length <= 8_000));
+  }
+});
+
+test('storage事件在处理中作废被删场景请求且不触碰scene2', async () => {
+  const delayed = deferredResponse();
+  const { ChatApp } = loadChatApp(() => delayed.promise);
+  const app = createApp(ChatApp, 0);
+  app.sessionGenerations = { 0: 0, 1: 0, 3: 0 };
+  app.sessions[2] = [{ who: 'user', text: '私密心理对话' }];
+  app.localStore = {
+    storageKey: 'aihesh.local.v1',
+    normalizeSession: messages => messages,
+    saveSession: () => true,
+    load: () => ({
+      version: 1,
+      profile: { grade: '', major: '', goal: '' },
+      sessions: { 0: [], 1: [], 3: [] },
+      sessionGenerations: { 0: 1, 1: 0, 3: 0 },
+    }),
+  };
+  installMessageHarness(app, ChatApp);
+  app.msgInput.value = '待删除问题';
+  let requestTask;
+  const fetchAIReply = ChatApp.prototype.fetchAIReply.bind(app);
+  app.fetchAIReply = (...args) => { requestTask = fetchAIReply(...args); };
+
+  ChatApp.prototype.handleSend.call(app);
+  ChatApp.prototype.handleStorageEvent.call(app, { key: 'aihesh.local.v1' });
+  delayed.resolve({ ok: true, json: async () => ({ reply: '不应复活' }) });
+  await requestTask;
+
+  assert.deepEqual(app.sessions[0], []);
+  assert.equal(app.sessions[2][0].text, '私密心理对话');
+  assert.equal(app.sessions[0].some(message => message.parts?.[0]?.text === '不应复活'), false);
 });
 
 test('资料保存成功直接使用合法表单值并刷新成长对话', () => {

@@ -15,6 +15,7 @@
       version: 1,
       profile: { grade: '', major: '', goal: '' },
       sessions: { 0: [], 1: [], 3: [] },
+      sessionGenerations: { 0: 0, 1: 0, 3: 0 },
     };
   }
 
@@ -120,6 +121,10 @@
     return cleaned.slice(-40);
   }
 
+  function cleanGeneration(value) {
+    return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  }
+
   function cleanState(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1) {
       return defaultState();
@@ -127,6 +132,11 @@
 
     const sessions = value.sessions && typeof value.sessions === 'object' && !Array.isArray(value.sessions)
       ? value.sessions
+      : {};
+    const generations = value.sessionGenerations
+      && typeof value.sessionGenerations === 'object'
+      && !Array.isArray(value.sessionGenerations)
+      ? value.sessionGenerations
       : {};
     return {
       version: 1,
@@ -136,10 +146,17 @@
         1: cleanMessages(sessions[1]),
         3: cleanMessages(sessions[3]),
       },
+      sessionGenerations: {
+        0: cleanGeneration(generations[0]),
+        1: cleanGeneration(generations[1]),
+        3: cleanGeneration(generations[3]),
+      },
     };
   }
 
   function createLocalStateStore(storage) {
+    const knownGenerations = { 0: null, 1: null, 3: null };
+
     function normalizeSession(messages) {
       return cleanMessages(messages);
     }
@@ -165,7 +182,11 @@
     }
 
     function load() {
-      return readState().state;
+      const state = readState().state;
+      for (const scene of ALLOWED_SCENES) {
+        knownGenerations[scene] = state.sessionGenerations[scene];
+      }
+      return state;
     }
 
     function write(state) {
@@ -187,13 +208,17 @@
       return write(state);
     }
 
-    function saveSession(scene, messages) {
+    function saveSession(scene, messages, expectedGeneration = knownGenerations[scene]) {
       if (!ALLOWED_SCENES.has(scene)) return false;
       const result = readState();
       if (!result.canWrite) return false;
       const state = result.state;
+      const currentGeneration = state.sessionGenerations[scene];
+      if (expectedGeneration !== null && expectedGeneration !== currentGeneration) return false;
       state.sessions[scene] = normalizeSession(messages);
-      return write(state);
+      const saved = write(state);
+      if (saved) knownGenerations[scene] = currentGeneration;
+      return saved;
     }
 
     function clearSession(scene) {
@@ -201,19 +226,44 @@
       const result = readState();
       if (!result.canWrite) return false;
       const state = result.state;
+      const currentGeneration = state.sessionGenerations[scene];
+      if (currentGeneration >= Number.MAX_SAFE_INTEGER) return false;
       state.sessions[scene] = [];
-      return write(state);
+      state.sessionGenerations[scene] = currentGeneration + 1;
+      const cleared = write(state);
+      if (cleared) knownGenerations[scene] = state.sessionGenerations[scene];
+      return cleared;
     }
 
     function clearAllSessions() {
       const result = readState();
       if (!result.canWrite) return false;
       const state = result.state;
+      if ([0, 1, 3].some(scene => state.sessionGenerations[scene] >= Number.MAX_SAFE_INTEGER)) {
+        return false;
+      }
       state.sessions = { 0: [], 1: [], 3: [] };
-      return write(state);
+      for (const scene of ALLOWED_SCENES) {
+        state.sessionGenerations[scene] += 1;
+      }
+      const cleared = write(state);
+      if (cleared) {
+        for (const scene of ALLOWED_SCENES) {
+          knownGenerations[scene] = state.sessionGenerations[scene];
+        }
+      }
+      return cleared;
     }
 
-    return { load, normalizeSession, saveProfile, saveSession, clearSession, clearAllSessions };
+    return {
+      storageKey: STORAGE_KEY,
+      load,
+      normalizeSession,
+      saveProfile,
+      saveSession,
+      clearSession,
+      clearAllSessions,
+    };
   }
 
   const publicApi = { defaultState, createLocalStateStore };

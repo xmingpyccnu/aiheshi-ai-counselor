@@ -46,6 +46,7 @@ test('defaultState返回相互独立的默认数据', () => {
     version: 1,
     profile: { grade: '', major: '', goal: '' },
     sessions: { 0: [], 1: [], 3: [] },
+    sessionGenerations: { 0: 0, 1: 0, 3: 0 },
   });
   first.sessions[0].push(userMessage(1));
   assert.equal(second.sessions[0].length, 0);
@@ -303,6 +304,51 @@ test('clearSession和clearAllSessions保留个人资料且不接受场景2', () 
   const saved = readSaved(storage);
   assert.deepEqual(saved.profile, { grade: 'junior', major: '心理学', goal: '毕业' });
   assert.deepEqual(saved.sessions, { 0: [], 1: [], 3: [] });
+});
+
+test('共享存储中单场景删除后陈旧标签无法复活历史', () => {
+  const storage = new MemoryStorage();
+  const staleStore = createLocalStateStore(storage);
+  const deletingStore = createLocalStateStore(storage);
+  staleStore.load();
+  assert.equal(staleStore.saveSession(0, [userMessage(1)]), true);
+  deletingStore.load();
+
+  assert.equal(deletingStore.clearSession(0), true);
+  assert.equal(staleStore.saveSession(0, [userMessage(1), userMessage(2)]), false);
+
+  const state = deletingStore.load();
+  assert.deepEqual(state.sessions[0], []);
+  assert.equal(state.sessionGenerations[0], 1);
+  assert.deepEqual(state.profile, { grade: '', major: '', goal: '' });
+  assert.equal(Object.hasOwn(state.sessions, '2'), false);
+});
+
+test('共享存储清空后陈旧标签无法复活任一历史', () => {
+  const storage = new MemoryStorage();
+  const staleStore = createLocalStateStore(storage);
+  const clearingStore = createLocalStateStore(storage);
+  staleStore.load();
+  assert.equal(staleStore.saveSession(1, [userMessage(1)]), true);
+  clearingStore.load();
+
+  assert.equal(clearingStore.clearAllSessions(), true);
+  assert.equal(staleStore.saveSession(1, [userMessage(1), userMessage(2)]), false);
+
+  const state = clearingStore.load();
+  assert.deepEqual(state.sessions, { 0: [], 1: [], 3: [] });
+  assert.deepEqual(state.sessionGenerations, { 0: 1, 1: 1, 3: 1 });
+});
+
+test('无删除竞态时同一store可正常连续写入', () => {
+  const storage = new MemoryStorage();
+  const store = createLocalStateStore(storage);
+  store.load();
+
+  assert.equal(store.saveSession(3, [userMessage(1)]), true);
+  assert.equal(store.saveSession(3, [userMessage(1), userMessage(2)]), true);
+  assert.deepEqual(store.load().sessions[3], [userMessage(1), userMessage(2)]);
+  assert.equal(store.load().sessionGenerations[3], 0);
 });
 
 test('存储写入异常时修改接口返回false', () => {

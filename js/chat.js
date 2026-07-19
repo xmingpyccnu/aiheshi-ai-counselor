@@ -6,6 +6,7 @@ class ChatApp {
     const localState = this.localStore.load();
     this.profile = localState.profile;
     this.sessions = [localState.sessions[0], localState.sessions[1], [], localState.sessions[3]];
+    this.sessionGenerations = localState.sessionGenerations;
     this.typingEl = null;
     this.lastFocusedElement = null;
     this.isProcessing = false;
@@ -14,6 +15,7 @@ class ChatApp {
     this.messageSequence = 0;
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
+    this.roundNetworkMessage = '';
     this.init();
   }
 
@@ -82,6 +84,7 @@ class ChatApp {
       if (!this.handoffModal.classList.contains('hidden')) this.closeHandoff();
       else if (!this.crisisModal.classList.contains('hidden')) this.closeCrisis();
     });
+    window.addEventListener('storage', event => this.handleStorageEvent(event));
 
     this.renderProfileForm();
     this.renderCurrentSession();
@@ -194,12 +197,19 @@ class ChatApp {
 
   addUserMessage(text, options = {}) {
     const targetScene = Number.isInteger(options.scene) ? options.scene : this.currentScene;
-    const message = options.message || {
+    let message = options.message || {
       who: 'user',
       id: this.nextMessageId('user'),
       text,
       createdAt: Date.now(),
     };
+
+    if (options.save !== false) {
+      this.sessions[targetScene].push(message);
+      this.sessions[targetScene] = this.localStore.normalizeSession(this.sessions[targetScene]);
+      this.notePersistenceResult(this.persistCurrentSession(targetScene));
+      message = this.sessions[targetScene].find(candidate => candidate.id === message.id) || message;
+    }
 
     if (targetScene === this.currentScene) {
       const bubble = document.createElement('div');
@@ -215,17 +225,13 @@ class ChatApp {
       this.chatScreen.appendChild(row);
     }
 
-    if (options.save !== false) {
-      this.sessions[targetScene].push(message);
-      this.notePersistenceResult(this.persistCurrentSession(targetScene));
-    }
     if (targetScene === this.currentScene) this.scrollBottom();
     return message;
   }
 
   addAIMessage(reply, options = {}) {
     const targetScene = Number.isInteger(options.scene) ? options.scene : this.currentScene;
-    const message = options.message || {
+    let message = options.message || {
       who: 'ai',
       id: this.nextMessageId('ai'),
       parts: reply.parts,
@@ -235,10 +241,17 @@ class ChatApp {
       followupDepth: options.followupDepth || 0,
     };
 
+    if (options.save !== false) {
+      this.sessions[targetScene].push(message);
+      this.sessions[targetScene] = this.localStore.normalizeSession(this.sessions[targetScene]);
+      this.notePersistenceResult(this.persistCurrentSession(targetScene));
+      message = this.sessions[targetScene].find(candidate => candidate.id === message.id) || message;
+    }
+
     if (targetScene === this.currentScene) {
       const stack = document.createElement('div');
       stack.className = 'stack left';
-      for (const part of reply.parts) {
+      for (const part of message.parts) {
         if (part.type === 'text') {
           const bubble = document.createElement('div');
           bubble.className = `bubble ai${part.coral ? ' coral' : ''}`;
@@ -272,10 +285,6 @@ class ChatApp {
       this.chatScreen.appendChild(row);
     }
 
-    if (options.save !== false) {
-      this.sessions[targetScene].push(message);
-      this.notePersistenceResult(this.persistCurrentSession(targetScene));
-    }
     if (targetScene === this.currentScene) this.scrollBottom();
     return message;
   }
@@ -342,6 +351,7 @@ class ChatApp {
   requestSecondAnswer(message, requestScene = this.currentScene) {
     if (this.isProcessing) return;
     const prompt = '这个回答没有解决我的问题。请回到我原来的问题，补充明确的制度依据、适用条件、具体步骤和可行的替代方案；不确定的信息请直接说明。';
+    const requestGeneration = this.getSceneGeneration(requestScene);
     this.beginProcessing();
     this.notePersistenceResult(this.persistCurrentSession(requestScene));
     this.addUserMessage(prompt, { scene: requestScene });
@@ -349,6 +359,7 @@ class ChatApp {
     this.fetchAIReply(prompt, {
       followupDepth: (message.followupDepth || 0) + 1,
       scene: requestScene,
+      generation: requestGeneration,
     });
   }
 
@@ -402,6 +413,7 @@ class ChatApp {
     const text = this.msgInput.value.trim();
     if (!text) return;
     const requestScene = this.currentScene;
+    const requestGeneration = this.getSceneGeneration(requestScene);
     this.lastSendTime = now;
     this.beginProcessing();
     this.addUserMessage(text, { scene: requestScene });
@@ -417,28 +429,35 @@ class ChatApp {
     }
 
     this.showTyping();
-    this.fetchAIReply(text, { scene: requestScene });
+    this.fetchAIReply(text, { scene: requestScene, generation: requestGeneration });
   }
 
   beginProcessing() {
     this.isProcessing = true;
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
+    this.roundNetworkMessage = '';
     this.sendBtn.disabled = true;
     this.msgInput.disabled = true;
   }
 
   async fetchAIReply(text, options = {}) {
     const requestScene = Number.isInteger(options.scene) ? options.scene : this.currentScene;
+    const requestGeneration = Number.isSafeInteger(options.generation)
+      ? options.generation
+      : this.getSceneGeneration(requestScene);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 75000);
     try {
+      this.sessions[requestScene] = this.localStore.normalizeSession(this.sessions[requestScene]);
       const history = this.sessions[requestScene]
         .filter(message => message.who === 'user' || message.who === 'ai')
         .slice(-20)
         .map(message => ({
           role: message.who === 'user' ? 'user' : 'assistant',
-          content: message.who === 'user' ? message.text : this.replyToPlainText(message.parts),
+          content: (message.who === 'user'
+            ? message.text
+            : this.replyToPlainText(message.parts)).slice(0, 8_000),
         }))
         .filter(message => message.content.trim());
 
@@ -454,6 +473,10 @@ class ChatApp {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.error) throw new Error(data.error || `服务器错误:${response.status}`);
+      if (!this.isRequestGenerationCurrent(requestScene, requestGeneration)) {
+        this.removeTyping();
+        return;
+      }
 
       this.removeTyping();
       this.addAIMessage(
@@ -463,8 +486,11 @@ class ChatApp {
     } catch (error) {
       console.error('获取AI回复失败:', error.name);
       this.removeTyping();
+      if (!this.isRequestGenerationCurrent(requestScene, requestGeneration)) return;
       this.roundNetworkFailed = true;
-      this.toast(error.name === 'AbortError' ? '回答超时，请稍后重试' : '获取回复失败，请稍后重试');
+      this.roundNetworkMessage = error.name === 'AbortError'
+        ? '获取回复失败（回答超时），请稍后重试'
+        : '获取回复失败，请稍后重试';
       this.addAIMessage(getAIReply(requestScene, text), {
         feedbackEligible: false,
         scene: requestScene,
@@ -502,10 +528,17 @@ class ChatApp {
   }
 
   finishProcessingRound() {
-    if (this.roundSaveFailed && !this.roundNetworkFailed) {
-      this.toast('对话未能保存');
+    let message = '';
+    if (this.roundNetworkFailed) {
+      message = this.roundNetworkMessage;
+      if (this.roundSaveFailed) message += '；当前对话未保存';
+    } else if (this.roundSaveFailed) {
+      message = '对话未能保存';
     }
+    if (message) this.toast(message);
     this.roundSaveFailed = false;
+    this.roundNetworkFailed = false;
+    this.roundNetworkMessage = '';
   }
 
   resetProcessingState() {
@@ -610,11 +643,58 @@ class ChatApp {
   persistCurrentSession(targetScene = this.currentScene) {
     if (targetScene === 2) return true;
     const normalized = this.localStore.normalizeSession(this.sessions[targetScene]);
-    const saved = this.localStore.saveSession(targetScene, normalized);
+    const saved = this.localStore.saveSession(
+      targetScene,
+      normalized,
+      this.getSceneGeneration(targetScene)
+    );
     if (!saved) return false;
 
     this.sessions[targetScene] = normalized;
     return true;
+  }
+
+  getSceneGeneration(sceneIndex) {
+    if (sceneIndex === 2) return null;
+    const generation = this.sessionGenerations?.[sceneIndex];
+    return Number.isSafeInteger(generation) && generation >= 0 ? generation : null;
+  }
+
+  isRequestGenerationCurrent(sceneIndex, requestGeneration) {
+    if (sceneIndex === 2) return true;
+    return requestGeneration === this.getSceneGeneration(sceneIndex);
+  }
+
+  handleStorageEvent(event) {
+    if (event.key !== null && event.key !== this.localStore.storageKey) return;
+
+    const previousProfile = JSON.stringify(this.profile);
+    const previousSessions = {
+      0: JSON.stringify(this.sessions[0]),
+      1: JSON.stringify(this.sessions[1]),
+      3: JSON.stringify(this.sessions[3]),
+    };
+    const previousGenerations = { ...this.sessionGenerations };
+    const localState = this.localStore.load();
+    const changedScenes = [0, 1, 3].filter(sceneIndex => (
+      previousSessions[sceneIndex] !== JSON.stringify(localState.sessions[sceneIndex])
+      || previousGenerations[sceneIndex] !== localState.sessionGenerations[sceneIndex]
+    ));
+
+    this.profile = localState.profile;
+    this.sessions[0] = localState.sessions[0];
+    this.sessions[1] = localState.sessions[1];
+    this.sessions[3] = localState.sessions[3];
+    this.sessionGenerations = localState.sessionGenerations;
+
+    if (this.currentScene !== 2 && changedScenes.includes(this.currentScene)) {
+      this.renderCurrentSession();
+    }
+    if (this.currentView === 'profile') {
+      if (previousProfile !== JSON.stringify(this.profile)) this.renderProfileForm();
+      this.updateProfileStats();
+      this.renderHistoryList();
+    }
   }
 
   renderHistoryList() {
@@ -688,7 +768,9 @@ class ChatApp {
       return;
     }
 
-    this.sessions[sceneIndex] = [];
+    const localState = this.localStore.load();
+    this.sessions[sceneIndex] = localState.sessions[sceneIndex];
+    this.sessionGenerations = localState.sessionGenerations;
     if (this.currentScene === sceneIndex) this.renderCurrentSession();
     this.updateProfileStats();
     this.renderHistoryList();
@@ -708,9 +790,11 @@ class ChatApp {
       return;
     }
 
-    this.sessions[0] = [];
-    this.sessions[1] = [];
-    this.sessions[3] = [];
+    const localState = this.localStore.load();
+    this.sessions[0] = localState.sessions[0];
+    this.sessions[1] = localState.sessions[1];
+    this.sessions[3] = localState.sessions[3];
+    this.sessionGenerations = localState.sessionGenerations;
     if (this.currentScene !== 2) this.renderCurrentSession();
     this.updateProfileStats();
     this.renderHistoryList();
