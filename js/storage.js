@@ -6,6 +6,9 @@
   const ALLOWED_GRADES = new Set(['', 'freshman', 'sophomore', 'junior', 'senior']);
   const ALLOWED_PART_TYPES = new Set(['text', 'source', 'card']);
   const ALLOWED_FEEDBACK_STATUSES = new Set(['resolved', 'unresolved']);
+  const MAX_RAW_JSON_LENGTH = 1024 * 1024;
+  const MAX_SESSION_SCAN = 200;
+  const MAX_PART_SCAN = 48;
 
   function defaultState() {
     return {
@@ -82,7 +85,12 @@
 
     if (message.who === 'ai') {
       if (!Array.isArray(message.parts)) return null;
-      const parts = message.parts.map(cleanPart).filter(Boolean).slice(0, 12);
+      const parts = [];
+      const scanLimit = Math.min(message.parts.length, MAX_PART_SCAN);
+      for (let index = 0; index < scanLimit && parts.length < 12; index += 1) {
+        const part = cleanPart(message.parts[index]);
+        if (part) parts.push(part);
+      }
       if (parts.length === 0) return null;
 
       const cleaned = withCommonMessageFields({ who: 'ai', parts }, message);
@@ -103,7 +111,13 @@
 
   function cleanMessages(messages) {
     if (!Array.isArray(messages)) return [];
-    return messages.map(cleanMessage).filter(Boolean).slice(-40);
+    const cleaned = [];
+    const start = Math.max(0, messages.length - MAX_SESSION_SCAN);
+    for (let index = start; index < messages.length; index += 1) {
+      const message = cleanMessage(messages[index]);
+      if (message) cleaned.push(message);
+    }
+    return cleaned.slice(-40);
   }
 
   function cleanState(value) {
@@ -126,14 +140,28 @@
   }
 
   function createLocalStateStore(storage) {
-    function load() {
+    function readState() {
+      let raw;
       try {
-        const raw = storage.getItem(STORAGE_KEY);
-        if (raw === null) return defaultState();
-        return cleanState(JSON.parse(raw));
+        raw = storage.getItem(STORAGE_KEY);
       } catch (_error) {
-        return defaultState();
+        return { canWrite: false, state: defaultState() };
       }
+
+      if (raw === null) return { canWrite: true, state: defaultState() };
+      if (typeof raw !== 'string' || raw.length > MAX_RAW_JSON_LENGTH) {
+        return { canWrite: false, state: defaultState() };
+      }
+
+      try {
+        return { canWrite: true, state: cleanState(JSON.parse(raw)) };
+      } catch (_error) {
+        return { canWrite: true, state: defaultState() };
+      }
+    }
+
+    function load() {
+      return readState().state;
     }
 
     function write(state) {
@@ -146,27 +174,35 @@
     }
 
     function saveProfile(profile) {
-      const state = load();
+      const result = readState();
+      if (!result.canWrite) return false;
+      const state = result.state;
       state.profile = cleanProfile(profile);
       return write(state);
     }
 
     function saveSession(scene, messages) {
       if (!ALLOWED_SCENES.has(scene)) return false;
-      const state = load();
+      const result = readState();
+      if (!result.canWrite) return false;
+      const state = result.state;
       state.sessions[scene] = cleanMessages(messages);
       return write(state);
     }
 
     function clearSession(scene) {
       if (!ALLOWED_SCENES.has(scene)) return false;
-      const state = load();
+      const result = readState();
+      if (!result.canWrite) return false;
+      const state = result.state;
       state.sessions[scene] = [];
       return write(state);
     }
 
     function clearAllSessions() {
-      const state = load();
+      const result = readState();
+      if (!result.canWrite) return false;
+      const state = result.state;
       state.sessions = { 0: [], 1: [], 3: [] };
       return write(state);
     }

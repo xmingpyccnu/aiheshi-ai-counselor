@@ -70,6 +70,77 @@ test('load在读取异常、非对象或版本不符时不阻断应用', () => {
   }
 });
 
+test('读取异常时所有读改写接口返回false且不覆盖存储', () => {
+  let setCalls = 0;
+  const storage = {
+    getItem() { throw new Error('temporary read failure'); },
+    setItem() { setCalls += 1; },
+  };
+  const store = createLocalStateStore(storage);
+
+  assert.equal(store.saveProfile({ grade: 'senior' }), false);
+  assert.equal(store.saveSession(1, [userMessage(1)]), false);
+  assert.equal(store.clearSession(1), false);
+  assert.equal(store.clearAllSessions(), false);
+  assert.equal(setCalls, 0);
+});
+
+test('超过1MB的原始JSON不解析且不被读改写覆盖', () => {
+  const oversizedRaw = JSON.stringify({
+    version: 1,
+    profile: { grade: 'junior', major: '心理学', goal: 'x'.repeat(1_100_000) },
+    sessions: { 0: [], 1: [], 3: [] },
+  });
+  const storage = new MemoryStorage({ [STORAGE_KEY]: oversizedRaw });
+  const store = createLocalStateStore(storage);
+  const originalParse = JSON.parse;
+  let parseCalls = 0;
+  let loaded;
+  let saveResult;
+
+  JSON.parse = (...args) => {
+    parseCalls += 1;
+    return originalParse(...args);
+  };
+  try {
+    loaded = store.load();
+    saveResult = store.saveProfile({ grade: 'senior' });
+  } finally {
+    JSON.parse = originalParse;
+  }
+
+  assert.deepEqual(loaded, defaultState());
+  assert.equal(saveResult, false);
+  assert.equal(parseCalls, 0);
+  assert.equal(storage.setCalls, 0);
+  assert.equal(storage.getItem(STORAGE_KEY), oversizedRaw);
+});
+
+test('会话只扫描尾部200项且AI部件只扫描前48项', () => {
+  const oldMessages = Array.from({ length: 20 }, (_, index) => userMessage(index));
+  const recentMessages = Array.from({ length: 39 }, (_, index) => userMessage(1_000 + index));
+  const parts = [
+    ...Array.from({ length: 37 }, () => ({ type: 'unknown', text: '不扫描' })),
+    ...Array.from({ length: 11 }, (_, index) => ({ type: 'text', text: `前窗口${index}` })),
+    ...Array.from({ length: 12 }, (_, index) => ({ type: 'text', text: `窗口外${index}` })),
+  ];
+  const raw = JSON.stringify({
+    version: 1,
+    profile: { grade: '', major: '', goal: '' },
+    sessions: {
+      0: [...oldMessages, ...Array(161).fill(null), ...recentMessages],
+      1: [],
+      3: [{ who: 'ai', parts }],
+    },
+  });
+
+  const loaded = createLocalStateStore(new MemoryStorage({ [STORAGE_KEY]: raw })).load();
+  assert.equal(loaded.sessions[0].length, 39);
+  assert.equal(loaded.sessions[0][0].text, '问题1000');
+  assert.equal(loaded.sessions[3][0].parts.length, 11);
+  assert.equal(loaded.sessions[3][0].parts.at(-1).text, '前窗口10');
+});
+
 test('场景2会话被心理隔离且不产生任何写入', () => {
   const storage = new MemoryStorage();
   const store = createLocalStateStore(storage);
