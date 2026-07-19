@@ -6,7 +6,8 @@ const {
   createLocalStateStore,
 } = require('../js/storage');
 
-const STORAGE_KEY = 'aihesh.local.v1';
+const LEGACY_STORAGE_KEY = 'aihesh.local.v1';
+const STORAGE_KEY = 'aihesh.local.v2';
 
 class MemoryStorage {
   constructor(initial = {}) {
@@ -28,6 +29,10 @@ function readSaved(storage) {
   return JSON.parse(storage.getItem(STORAGE_KEY));
 }
 
+function readSavedV2(storage) {
+  return JSON.parse(storage.getItem(STORAGE_KEY));
+}
+
 function userMessage(index, overrides = {}) {
   return {
     who: 'user',
@@ -43,10 +48,10 @@ test('defaultState返回相互独立的默认数据', () => {
   const second = defaultState();
 
   assert.deepEqual(first, {
-    version: 1,
+    version: 2,
     profile: { grade: '', major: '', goal: '' },
     sessions: { 0: [], 1: [], 3: [] },
-    sessionGenerations: { 0: 0, 1: 0, 3: 0 },
+    sessionRevisions: { 0: 0, 1: 0, 3: 0 },
   });
   first.sessions[0].push(userMessage(1));
   assert.equal(second.sessions[0].length, 0);
@@ -65,13 +70,13 @@ test('load在读取异常、非对象或版本不符时不阻断应用', () => {
   };
   assert.deepEqual(createLocalStateStore(throwingStorage).load(), defaultState());
 
-  for (const raw of ['null', '[]', '{"version":2}']) {
+  for (const raw of ['null', '[]', '{"version":1}']) {
     const storage = new MemoryStorage({ [STORAGE_KEY]: raw });
     assert.deepEqual(createLocalStateStore(storage).load(), defaultState());
   }
 });
 
-test('读取异常时所有读改写接口返回false且不覆盖存储', () => {
+test('读取异常时所有读改写接口返回失败且不覆盖存储', () => {
   let setCalls = 0;
   const storage = {
     getItem() { throw new Error('temporary read failure'); },
@@ -80,15 +85,15 @@ test('读取异常时所有读改写接口返回false且不覆盖存储', () => 
   const store = createLocalStateStore(storage);
 
   assert.equal(store.saveProfile({ grade: 'senior' }), false);
-  assert.equal(store.saveSession(1, [userMessage(1)]), false);
-  assert.equal(store.clearSession(1), false);
-  assert.equal(store.clearAllSessions(), false);
+  assert.deepEqual(store.saveSession(1, [userMessage(1)], 0), { ok: false, reason: 'unavailable' });
+  assert.deepEqual(store.clearSession(1, 0), { ok: false, reason: 'unavailable' });
+  assert.deepEqual(store.clearAllSessions({ 0: 0, 1: 0, 3: 0 }), { ok: false, reason: 'unavailable' });
   assert.equal(setCalls, 0);
 });
 
 test('超过1MB的原始JSON不解析且不被读改写覆盖', () => {
   const oversizedRaw = JSON.stringify({
-    version: 1,
+    version: 2,
     profile: { grade: 'junior', major: '心理学', goal: 'x'.repeat(1_100_000) },
     sessions: { 0: [], 1: [], 3: [] },
   });
@@ -126,7 +131,7 @@ test('会话只扫描尾部200项且AI部件只扫描前48项', () => {
     ...Array.from({ length: 12 }, (_, index) => ({ type: 'text', text: `窗口外${index}` })),
   ];
   const raw = JSON.stringify({
-    version: 1,
+    version: 2,
     profile: { grade: '', major: '', goal: '' },
     sessions: {
       0: [...oldMessages, ...Array(161).fill(null), ...recentMessages],
@@ -146,25 +151,30 @@ test('场景2会话被心理隔离且不产生任何写入', () => {
   const storage = new MemoryStorage();
   const store = createLocalStateStore(storage);
 
-  assert.equal(store.saveSession(2, [userMessage(1)]), false);
-  assert.equal(storage.setCalls, 0);
-  assert.equal(storage.getItem(STORAGE_KEY), null);
-  assert.equal(Object.hasOwn(store.load().sessions, '2'), false);
+  const state = store.load();
+  const callsBeforeRejectedSave = storage.setCalls;
+  assert.deepEqual(store.saveSession(2, [userMessage(1)], 0), { ok: false, reason: 'invalid' });
+  assert.equal(storage.setCalls, callsBeforeRejectedSave);
+  assert.notEqual(storage.getItem(STORAGE_KEY), null);
+  assert.equal(Object.hasOwn(state.sessions, '2'), false);
 });
 
 test('场景1可以保存合法消息', () => {
   const storage = new MemoryStorage();
   const store = createLocalStateStore(storage);
+  const state = store.load();
 
-  assert.equal(store.saveSession(1, [userMessage(1)]), true);
+  assert.deepEqual(store.saveSession(1, [userMessage(1)], state.sessionRevisions[1]), { ok: true, revision: 1 });
   assert.deepEqual(readSaved(storage).sessions['1'], [userMessage(1)]);
 });
 
 test('45条合法消息只保留最后40条', () => {
   const storage = new MemoryStorage();
   const messages = Array.from({ length: 45 }, (_, index) => userMessage(index));
+  const store = createLocalStateStore(storage);
+  const state = store.load();
 
-  assert.equal(createLocalStateStore(storage).saveSession(0, messages), true);
+  assert.deepEqual(store.saveSession(0, messages, state.sessionRevisions[0]), { ok: true, revision: 1 });
   const savedMessages = readSaved(storage).sessions['0'];
   assert.equal(savedMessages.length, 40);
   assert.equal(savedMessages[0].text, '问题5');
@@ -186,7 +196,7 @@ test('normalizeSession为程序内存提供与持久化一致的规范化结果'
 
 test('合法会话序列化超过1MB时拒绝写入并保留原存储', () => {
   const originalRaw = JSON.stringify({
-    version: 1,
+    version: 2,
     profile: { grade: 'senior', major: '心理学', goal: '毕业' },
     sessions: { 0: [userMessage(1)], 1: [], 3: [] },
   });
@@ -204,9 +214,9 @@ test('合法会话序列化超过1MB时拒绝写入并保留原存储', () => {
   }));
   assert.ok(JSON.stringify(messages).length > 1024 * 1024);
 
-  const result = createLocalStateStore(storage).saveSession(1, messages);
+  const result = createLocalStateStore(storage).saveSession(1, messages, 0);
 
-  assert.equal(result, false);
+  assert.deepEqual(result, { ok: false, reason: 'unavailable' });
   assert.equal(storage.setCalls, 0);
   assert.equal(storage.getItem(STORAGE_KEY), originalRaw);
 });
@@ -215,6 +225,7 @@ test('saveProfile清洗年级并截断专业和目标', () => {
   const storage = new MemoryStorage();
   const store = createLocalStateStore(storage);
 
+  store.load();
   assert.equal(store.saveProfile({
     grade: 'graduate',
     major: `  ${'专'.repeat(45)}  `,
@@ -257,7 +268,8 @@ test('消息清洗限制字段、长度和AI部件类型', () => {
     { who: 'ai', parts: [] },
   ];
 
-  assert.equal(store.saveSession(3, messages), true);
+  const state = store.load();
+  assert.deepEqual(store.saveSession(3, messages, state.sessionRevisions[3]), { ok: true, revision: 1 });
   const saved = readSaved(storage).sessions['3'];
   assert.equal(saved.length, 2);
   assert.equal(saved[0].id.length, 80);
@@ -279,28 +291,34 @@ test('AI部件的coral值转换为布尔值', () => {
   const storage = new MemoryStorage();
   const store = createLocalStateStore(storage);
 
-  assert.equal(store.saveSession(0, [{
+  const state = store.load();
+  assert.deepEqual(store.saveSession(0, [{
     who: 'ai',
     parts: [{ type: 'text', text: '高风险提示', coral: 1 }],
-  }]), true);
+  }], state.sessionRevisions[0]), { ok: true, revision: 1 });
   assert.equal(readSaved(storage).sessions['0'][0].parts[0].coral, true);
 });
 
 test('clearSession和clearAllSessions保留个人资料且不接受场景2', () => {
   const storage = new MemoryStorage();
   const store = createLocalStateStore(storage);
+  const revisions = store.load().sessionRevisions;
   store.saveProfile({ grade: 'junior', major: '心理学', goal: '毕业' });
-  store.saveSession(0, [userMessage(0)]);
-  store.saveSession(1, [userMessage(1)]);
-  store.saveSession(3, [userMessage(3)]);
+  const saved0 = store.saveSession(0, [userMessage(0)], revisions[0]);
+  const saved1 = store.saveSession(1, [userMessage(1)], revisions[1]);
+  const saved3 = store.saveSession(3, [userMessage(3)], revisions[3]);
 
   const callsBeforeRejectedClear = storage.setCalls;
-  assert.equal(store.clearSession(2), false);
+  assert.deepEqual(store.clearSession(2, 0), { ok: false, reason: 'invalid' });
   assert.equal(storage.setCalls, callsBeforeRejectedClear);
-  assert.equal(store.clearSession(1), true);
+  assert.deepEqual(store.clearSession(1, saved1.revision), { ok: true, revision: 2 });
   assert.deepEqual(readSaved(storage).sessions['1'], []);
 
-  assert.equal(store.clearAllSessions(), true);
+  assert.deepEqual(store.clearAllSessions({
+    0: saved0.revision,
+    1: 2,
+    3: saved3.revision,
+  }), { ok: true, revisions: { 0: 2, 1: 3, 3: 2 } });
   const saved = readSaved(storage);
   assert.deepEqual(saved.profile, { grade: 'junior', major: '心理学', goal: '毕业' });
   assert.deepEqual(saved.sessions, { 0: [], 1: [], 3: [] });
@@ -310,16 +328,18 @@ test('共享存储中单场景删除后陈旧标签无法复活历史', () => {
   const storage = new MemoryStorage();
   const staleStore = createLocalStateStore(storage);
   const deletingStore = createLocalStateStore(storage);
-  staleStore.load();
-  assert.equal(staleStore.saveSession(0, [userMessage(1)]), true);
-  deletingStore.load();
+  const staleState = staleStore.load();
+  const firstSave = staleStore.saveSession(0, [userMessage(1)], staleState.sessionRevisions[0]);
+  const deletingState = deletingStore.load();
 
-  assert.equal(deletingStore.clearSession(0), true);
-  assert.equal(staleStore.saveSession(0, [userMessage(1), userMessage(2)]), false);
+  assert.deepEqual(deletingStore.clearSession(0, deletingState.sessionRevisions[0]), { ok: true, revision: 2 });
+  const staleSave = staleStore.saveSession(0, [userMessage(1), userMessage(2)], firstSave.revision);
+  assert.equal(staleSave.ok, false);
+  assert.equal(staleSave.reason, 'conflict');
 
   const state = deletingStore.load();
   assert.deepEqual(state.sessions[0], []);
-  assert.equal(state.sessionGenerations[0], 1);
+  assert.equal(state.sessionRevisions[0], 2);
   assert.deepEqual(state.profile, { grade: '', major: '', goal: '' });
   assert.equal(Object.hasOwn(state.sessions, '2'), false);
 });
@@ -328,30 +348,37 @@ test('共享存储清空后陈旧标签无法复活任一历史', () => {
   const storage = new MemoryStorage();
   const staleStore = createLocalStateStore(storage);
   const clearingStore = createLocalStateStore(storage);
-  staleStore.load();
-  assert.equal(staleStore.saveSession(1, [userMessage(1)]), true);
-  clearingStore.load();
+  const staleState = staleStore.load();
+  const firstSave = staleStore.saveSession(1, [userMessage(1)], staleState.sessionRevisions[1]);
+  const clearingState = clearingStore.load();
 
-  assert.equal(clearingStore.clearAllSessions(), true);
-  assert.equal(staleStore.saveSession(1, [userMessage(1), userMessage(2)]), false);
+  assert.deepEqual(clearingStore.clearAllSessions(clearingState.sessionRevisions), {
+    ok: true,
+    revisions: { 0: 1, 1: 2, 3: 1 },
+  });
+  const staleSave = staleStore.saveSession(1, [userMessage(1), userMessage(2)], firstSave.revision);
+  assert.equal(staleSave.ok, false);
+  assert.equal(staleSave.reason, 'conflict');
 
   const state = clearingStore.load();
   assert.deepEqual(state.sessions, { 0: [], 1: [], 3: [] });
-  assert.deepEqual(state.sessionGenerations, { 0: 1, 1: 1, 3: 1 });
+  assert.deepEqual(state.sessionRevisions, { 0: 1, 1: 2, 3: 1 });
 });
 
 test('无删除竞态时同一store可正常连续写入', () => {
   const storage = new MemoryStorage();
   const store = createLocalStateStore(storage);
-  store.load();
+  const state = store.load();
 
-  assert.equal(store.saveSession(3, [userMessage(1)]), true);
-  assert.equal(store.saveSession(3, [userMessage(1), userMessage(2)]), true);
+  const first = store.saveSession(3, [userMessage(1)], state.sessionRevisions[3]);
+  const second = store.saveSession(3, [userMessage(1), userMessage(2)], first.revision);
+  assert.deepEqual(first, { ok: true, revision: 1 });
+  assert.deepEqual(second, { ok: true, revision: 2 });
   assert.deepEqual(store.load().sessions[3], [userMessage(1), userMessage(2)]);
-  assert.equal(store.load().sessionGenerations[3], 0);
+  assert.equal(store.load().sessionRevisions[3], 2);
 });
 
-test('存储写入异常时修改接口返回false', () => {
+test('存储写入异常时修改接口返回失败', () => {
   const storage = {
     getItem() { return null; },
     setItem() { throw new Error('quota exceeded'); },
@@ -359,7 +386,102 @@ test('存储写入异常时修改接口返回false', () => {
   const store = createLocalStateStore(storage);
 
   assert.equal(store.saveProfile({ grade: 'freshman' }), false);
-  assert.equal(store.saveSession(0, [userMessage(0)]), false);
-  assert.equal(store.clearSession(0), false);
-  assert.equal(store.clearAllSessions(), false);
+  assert.deepEqual(store.saveSession(0, [userMessage(0)], 0), { ok: false, reason: 'unavailable' });
+  assert.deepEqual(store.clearSession(0, 0), { ok: false, reason: 'unavailable' });
+  assert.deepEqual(store.clearAllSessions({ 0: 0, 1: 0, 3: 0 }), { ok: false, reason: 'unavailable' });
+});
+
+test('v2不存在时只迁移一次v1，之后忽略v1更新', () => {
+  const legacy = {
+    version: 1,
+    profile: { grade: 'junior', major: '心理学', goal: '毕业' },
+    sessions: { 0: [userMessage(1)], 1: [], 3: [] },
+    sessionGenerations: { 0: 4, 1: 0, 3: 2 },
+  };
+  const storage = new MemoryStorage({ [LEGACY_STORAGE_KEY]: JSON.stringify(legacy) });
+  const store = createLocalStateStore(storage);
+
+  const migrated = store.load();
+  assert.equal(store.storageKey, STORAGE_KEY);
+  assert.equal(migrated.version, 2);
+  assert.deepEqual(migrated.sessions[0], [userMessage(1)]);
+  assert.deepEqual(migrated.sessionRevisions, { 0: 4, 1: 0, 3: 2 });
+  assert.deepEqual(readSavedV2(storage), migrated);
+
+  storage.setItem(LEGACY_STORAGE_KEY, JSON.stringify({
+    ...legacy,
+    sessions: { 0: [userMessage(99)], 1: [], 3: [] },
+    sessionGenerations: { 0: 99, 1: 0, 3: 2 },
+  }));
+  assert.deepEqual(store.load(), migrated);
+});
+
+test('v2清空后旧标签继续写v1也不能恢复历史或倒退revision', () => {
+  const legacy = {
+    version: 1,
+    profile: { grade: '', major: '', goal: '' },
+    sessions: { 0: [userMessage(1)], 1: [userMessage(2)], 3: [] },
+  };
+  const storage = new MemoryStorage({ [LEGACY_STORAGE_KEY]: JSON.stringify(legacy) });
+  const store = createLocalStateStore(storage);
+  const initial = store.load();
+
+  const cleared = store.clearAllSessions(initial.sessionRevisions);
+  assert.equal(cleared.ok, true);
+  assert.deepEqual(cleared.revisions, { 0: 1, 1: 1, 3: 1 });
+
+  storage.setItem(LEGACY_STORAGE_KEY, JSON.stringify({
+    ...legacy,
+    sessions: { 0: [userMessage(88)], 1: [userMessage(89)], 3: [userMessage(90)] },
+  }));
+  const reloaded = createLocalStateStore(storage).load();
+  assert.deepEqual(reloaded.sessions, { 0: [], 1: [], 3: [] });
+  assert.deepEqual(reloaded.sessionRevisions, { 0: 1, 1: 1, 3: 1 });
+  assert.notEqual(storage.getItem(STORAGE_KEY), null);
+});
+
+test('两个v2标签从同一revision并发保存时只有一个CAS成功', () => {
+  const storage = new MemoryStorage();
+  const firstStore = createLocalStateStore(storage);
+  const secondStore = createLocalStateStore(storage);
+  const firstState = firstStore.load();
+  const secondState = secondStore.load();
+
+  const firstResult = firstStore.saveSession(0, [userMessage(1)], firstState.sessionRevisions?.[0] ?? 0);
+  const secondResult = secondStore.saveSession(0, [userMessage(2)], secondState.sessionRevisions?.[0] ?? 0);
+
+  assert.deepEqual(firstResult, { ok: true, revision: 1 });
+  assert.equal(secondResult.ok, false);
+  assert.equal(secondResult.reason, 'conflict');
+  assert.equal(secondResult.revision, 1);
+  assert.deepEqual(secondStore.load().sessions[0], [userMessage(1)]);
+});
+
+test('普通保存和删除每次成功都递增各自场景revision', () => {
+  const storage = new MemoryStorage();
+  const store = createLocalStateStore(storage);
+  const initial = store.load();
+
+  const first = store.saveSession(3, [userMessage(1)], initial.sessionRevisions?.[3] ?? 0);
+  const second = store.saveSession(3, [userMessage(1), userMessage(2)], first.revision);
+  const removed = store.clearSession(3, second.revision);
+
+  assert.deepEqual(first, { ok: true, revision: 1 });
+  assert.deepEqual(second, { ok: true, revision: 2 });
+  assert.deepEqual(removed, { ok: true, revision: 3 });
+  assert.deepEqual(store.load().sessions[3], []);
+  assert.equal(store.load().sessionRevisions[3], 3);
+});
+
+test('保存资料保留v2中的全部会话与revision', () => {
+  const storage = new MemoryStorage();
+  const store = createLocalStateStore(storage);
+  const initial = store.load();
+  const saved = store.saveSession(1, [userMessage(1)], initial.sessionRevisions?.[1] ?? 0);
+
+  assert.equal(store.saveProfile({ grade: 'senior', major: '心理学', goal: '毕业' }), true);
+  const state = store.load();
+  assert.deepEqual(state.sessions[1], [userMessage(1)]);
+  assert.equal(state.sessionRevisions?.[1], saved.revision);
+  assert.deepEqual(state.profile, { grade: 'senior', major: '心理学', goal: '毕业' });
 });

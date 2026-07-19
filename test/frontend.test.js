@@ -142,9 +142,9 @@ test('对话初始化恢复非心理历史并接入年级化欢迎语', () => {
 test('对话仅持久化非心理模块且反馈状态会同步', () => {
   const source = read('js/chat.js');
   assert.match(source, /persistCurrentSession\(targetScene\s*=\s*this\.currentScene\)/);
-  assert.match(source, /if\s*\(targetScene\s*===\s*2\)\s*return true;/);
-  assert.match(source, /this\.localStore\.saveSession\([\s\S]*targetScene,[\s\S]*normalized,[\s\S]*this\.getSceneGeneration\(targetScene\)/);
-  assert.match(source, /this\.sessions\[targetScene\]\.push\(message\);\s*this\.sessions\[targetScene\]\s*=\s*this\.localStore\.normalizeSession\([\s\S]*this\.notePersistenceResult\(this\.persistCurrentSession\(targetScene\)\)/s);
+  assert.match(source, /if\s*\(targetScene\s*===\s*2\)\s*\{[\s\S]*revision:\s*null[\s\S]*return true;[\s\S]*\}/);
+  assert.match(source, /this\.localStore\.saveSession\([\s\S]*targetScene,[\s\S]*normalized,[\s\S]*this\.getSceneRevision\(targetScene\)/);
+  assert.match(source, /this\.sessions\[targetScene\]\.push\(message\);\s*this\.sessions\[targetScene\]\s*=\s*this\.localStore\.normalizeSession\([\s\S]*const persistenceResult\s*=\s*this\.persistCurrentSession\(targetScene\);\s*this\.notePersistenceResult\(persistenceResult\)/s);
   assert.match(source, /message\.feedbackStatus\s*=\s*'resolved';[\s\S]*this\.persistCurrentSession\(targetScene\)/);
   assert.match(source, /message\.feedbackStatus\s*=\s*'unresolved';[\s\S]*this\.persistCurrentSession\(targetScene\)/);
 });
@@ -153,8 +153,8 @@ test('仅成长请求带本地资料并提供历史管理', () => {
   const source = read('js/chat.js');
   assert.match(source, /profile:\s*requestScene\s*===\s*1\s*\?\s*this\.profile\s*:\s*undefined/);
   assert.match(source, /renderHistoryList\(\)/);
-  assert.match(source, /clearSession\(sceneIndex\)/);
-  assert.match(source, /clearAllSessions\(\)/);
+  assert.match(source, /clearSession\(sceneIndex,\s*this\.getSceneRevision\(sceneIndex\)\)/);
+  assert.match(source, /clearAllSessions\(\{\s*\.\.\.this\.sessionRevisions\s*\}\)/);
   assert.match(source, /只删除当前设备上的该模块历史，是否继续？/);
   assert.match(source, /将清除当前设备上的校园、成长和事务历史，是否继续？/);
   assert.doesNotMatch(source, /(?:profile|major|goal|grade)[^\n]{0,80}\.innerHTML\s*=/i);
@@ -162,8 +162,8 @@ test('仅成长请求带本地资料并提供历史管理', () => {
 
 test('删除本地历史后会同步当前对话界面', () => {
   const source = read('js/chat.js');
-  assert.match(source, /const localState\s*=\s*this\.localStore\.load\(\);\s*this\.sessions\[sceneIndex\]\s*=\s*localState\.sessions\[sceneIndex\];[\s\S]*if\s*\(this\.currentScene\s*===\s*sceneIndex\)\s*this\.renderCurrentSession\(\)/s);
-  assert.match(source, /this\.sessions\[3\]\s*=\s*localState\.sessions\[3\];[\s\S]*if\s*\(this\.currentScene\s*!==\s*2\)\s*this\.renderCurrentSession\(\)/s);
+  assert.match(source, /this\.sessions\[sceneIndex\]\s*=\s*\[\];\s*this\.sessionRevisions\[sceneIndex\]\s*=\s*result\.revision;[\s\S]*if\s*\(this\.currentScene\s*===\s*sceneIndex\)\s*this\.renderCurrentSession\(\)/s);
+  assert.match(source, /this\.sessions\[3\]\s*=\s*\[\];\s*this\.sessionRevisions\s*=\s*result\.revisions;[\s\S]*if\s*\(this\.currentScene\s*!==\s*2\)\s*this\.renderCurrentSession\(\)/s);
 });
 
 test('本地历史动态按钮标明模块且删除后转移焦点', () => {
@@ -173,11 +173,11 @@ test('本地历史动态按钮标明模块且删除后转移焦点', () => {
   assert.match(source, /this\.historyList\.focus\(\)/);
 });
 
-test('前端监听跨标签存储变化并按请求代次作废迟到回复', () => {
+test('前端监听跨标签存储变化并按请求revision作废迟到回复', () => {
   const source = read('js/chat.js');
   assert.match(source, /window\.addEventListener\('storage',\s*event\s*=>\s*this\.handleStorageEvent\(event\)\)/);
-  assert.match(source, /sessionGenerations/);
-  assert.match(source, /requestGeneration/);
+  assert.match(source, /sessionRevisions/);
+  assert.match(source, /requestRevision/);
   assert.match(source, /handleStorageEvent\(event\)/);
 });
 

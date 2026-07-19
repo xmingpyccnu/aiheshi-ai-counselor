@@ -1,7 +1,8 @@
 (function initLocalStorageModule(root) {
   'use strict';
 
-  const STORAGE_KEY = 'aihesh.local.v1';
+  const STORAGE_KEY = 'aihesh.local.v2';
+  const LEGACY_STORAGE_KEY = 'aihesh.local.v1';
   const ALLOWED_SCENES = new Set([0, 1, 3]);
   const ALLOWED_GRADES = new Set(['', 'freshman', 'sophomore', 'junior', 'senior']);
   const ALLOWED_PART_TYPES = new Set(['text', 'source', 'card']);
@@ -12,10 +13,10 @@
 
   function defaultState() {
     return {
-      version: 1,
+      version: 2,
       profile: { grade: '', major: '', goal: '' },
       sessions: { 0: [], 1: [], 3: [] },
-      sessionGenerations: { 0: 0, 1: 0, 3: 0 },
+      sessionRevisions: { 0: 0, 1: 0, 3: 0 },
     };
   }
 
@@ -121,72 +122,90 @@
     return cleaned.slice(-40);
   }
 
-  function cleanGeneration(value) {
+  function cleanRevision(value) {
     return Number.isSafeInteger(value) && value >= 0 ? value : 0;
   }
 
   function cleanState(value) {
-    if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 2) {
       return defaultState();
     }
 
     const sessions = value.sessions && typeof value.sessions === 'object' && !Array.isArray(value.sessions)
       ? value.sessions
       : {};
-    const generations = value.sessionGenerations
-      && typeof value.sessionGenerations === 'object'
-      && !Array.isArray(value.sessionGenerations)
-      ? value.sessionGenerations
+    const revisions = value.sessionRevisions
+      && typeof value.sessionRevisions === 'object'
+      && !Array.isArray(value.sessionRevisions)
+      ? value.sessionRevisions
       : {};
     return {
-      version: 1,
+      version: 2,
       profile: cleanProfile(value.profile),
       sessions: {
         0: cleanMessages(sessions[0]),
         1: cleanMessages(sessions[1]),
         3: cleanMessages(sessions[3]),
       },
-      sessionGenerations: {
-        0: cleanGeneration(generations[0]),
-        1: cleanGeneration(generations[1]),
-        3: cleanGeneration(generations[3]),
+      sessionRevisions: {
+        0: cleanRevision(revisions[0]),
+        1: cleanRevision(revisions[1]),
+        3: cleanRevision(revisions[3]),
+      },
+    };
+  }
+
+  function migrateLegacyState(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1) {
+      return defaultState();
+    }
+    const legacySessions = value.sessions && typeof value.sessions === 'object' && !Array.isArray(value.sessions)
+      ? value.sessions
+      : {};
+    const legacyGenerations = value.sessionGenerations
+      && typeof value.sessionGenerations === 'object'
+      && !Array.isArray(value.sessionGenerations)
+      ? value.sessionGenerations
+      : {};
+    return {
+      version: 2,
+      profile: cleanProfile(value.profile),
+      sessions: {
+        0: cleanMessages(legacySessions[0]),
+        1: cleanMessages(legacySessions[1]),
+        3: cleanMessages(legacySessions[3]),
+      },
+      sessionRevisions: {
+        0: cleanRevision(legacyGenerations[0]),
+        1: cleanRevision(legacyGenerations[1]),
+        3: cleanRevision(legacyGenerations[3]),
       },
     };
   }
 
   function createLocalStateStore(storage) {
-    const knownGenerations = { 0: null, 1: null, 3: null };
-
     function normalizeSession(messages) {
       return cleanMessages(messages);
     }
 
-    function readState() {
+    function readRaw(key) {
       let raw;
       try {
-        raw = storage.getItem(STORAGE_KEY);
+        raw = storage.getItem(key);
       } catch (_error) {
-        return { canWrite: false, state: defaultState() };
+        return { status: 'unavailable' };
       }
 
-      if (raw === null) return { canWrite: true, state: defaultState() };
+      if (raw === null) return { status: 'missing' };
       if (typeof raw !== 'string' || raw.length > MAX_RAW_JSON_LENGTH) {
-        return { canWrite: false, state: defaultState() };
+        return { status: 'invalid' };
       }
 
       try {
-        return { canWrite: true, state: cleanState(JSON.parse(raw)) };
+        return { status: 'valid', value: JSON.parse(raw) };
       } catch (_error) {
-        return { canWrite: true, state: defaultState() };
+        return { status: 'invalid' };
       }
-    }
-
-    function load() {
-      const state = readState().state;
-      for (const scene of ALLOWED_SCENES) {
-        knownGenerations[scene] = state.sessionGenerations[scene];
-      }
-      return state;
     }
 
     function write(state) {
@@ -200,6 +219,39 @@
       }
     }
 
+    function readState() {
+      const current = readRaw(STORAGE_KEY);
+      if (current.status === 'unavailable') {
+        return { canWrite: false, state: defaultState() };
+      }
+      if (current.status === 'valid') {
+        if (!current.value || current.value.version !== 2) {
+          return { canWrite: false, state: defaultState() };
+        }
+        return { canWrite: true, state: cleanState(current.value) };
+      }
+      if (current.status === 'invalid') {
+        return { canWrite: false, state: defaultState() };
+      }
+
+      const legacy = readRaw(LEGACY_STORAGE_KEY);
+      if (legacy.status === 'unavailable') {
+        return { canWrite: false, state: defaultState() };
+      }
+      const state = legacy.status === 'valid'
+        ? migrateLegacyState(legacy.value)
+        : defaultState();
+      return { canWrite: write(state), state };
+    }
+
+    function load() {
+      return readState().state;
+    }
+
+    function failure(reason, extras = {}) {
+      return { ok: false, reason, ...extras };
+    }
+
     function saveProfile(profile) {
       const result = readState();
       if (!result.canWrite) return false;
@@ -208,51 +260,66 @@
       return write(state);
     }
 
-    function saveSession(scene, messages, expectedGeneration = knownGenerations[scene]) {
-      if (!ALLOWED_SCENES.has(scene)) return false;
+    function saveSession(scene, messages, expectedRevision) {
+      if (!ALLOWED_SCENES.has(scene) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+        return failure('invalid');
+      }
       const result = readState();
-      if (!result.canWrite) return false;
+      if (!result.canWrite) return failure('unavailable');
       const state = result.state;
-      const currentGeneration = state.sessionGenerations[scene];
-      if (expectedGeneration !== null && expectedGeneration !== currentGeneration) return false;
+      const currentRevision = state.sessionRevisions[scene];
+      if (expectedRevision !== currentRevision) {
+        return failure('conflict', { revision: currentRevision, state });
+      }
+      if (currentRevision >= Number.MAX_SAFE_INTEGER) return failure('unavailable');
       state.sessions[scene] = normalizeSession(messages);
+      state.sessionRevisions[scene] = currentRevision + 1;
       const saved = write(state);
-      if (saved) knownGenerations[scene] = currentGeneration;
-      return saved;
+      return saved
+        ? { ok: true, revision: state.sessionRevisions[scene] }
+        : failure('unavailable');
     }
 
-    function clearSession(scene) {
-      if (!ALLOWED_SCENES.has(scene)) return false;
+    function clearSession(scene, expectedRevision) {
+      if (!ALLOWED_SCENES.has(scene) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+        return failure('invalid');
+      }
       const result = readState();
-      if (!result.canWrite) return false;
+      if (!result.canWrite) return failure('unavailable');
       const state = result.state;
-      const currentGeneration = state.sessionGenerations[scene];
-      if (currentGeneration >= Number.MAX_SAFE_INTEGER) return false;
+      const currentRevision = state.sessionRevisions[scene];
+      if (expectedRevision !== currentRevision) {
+        return failure('conflict', { revision: currentRevision, state });
+      }
+      if (currentRevision >= Number.MAX_SAFE_INTEGER) return failure('unavailable');
       state.sessions[scene] = [];
-      state.sessionGenerations[scene] = currentGeneration + 1;
-      const cleared = write(state);
-      if (cleared) knownGenerations[scene] = state.sessionGenerations[scene];
-      return cleared;
+      state.sessionRevisions[scene] = currentRevision + 1;
+      return write(state)
+        ? { ok: true, revision: state.sessionRevisions[scene] }
+        : failure('unavailable');
     }
 
-    function clearAllSessions() {
+    function clearAllSessions(expectedRevisions) {
+      if (!expectedRevisions || typeof expectedRevisions !== 'object') return failure('invalid');
       const result = readState();
-      if (!result.canWrite) return false;
+      if (!result.canWrite) return failure('unavailable');
       const state = result.state;
-      if ([0, 1, 3].some(scene => state.sessionGenerations[scene] >= Number.MAX_SAFE_INTEGER)) {
-        return false;
+      const hasConflict = [0, 1, 3].some(scene => (
+        expectedRevisions[scene] !== state.sessionRevisions[scene]
+      ));
+      if (hasConflict) {
+        return failure('conflict', { revisions: { ...state.sessionRevisions }, state });
+      }
+      if ([0, 1, 3].some(scene => state.sessionRevisions[scene] >= Number.MAX_SAFE_INTEGER)) {
+        return failure('unavailable');
       }
       state.sessions = { 0: [], 1: [], 3: [] };
       for (const scene of ALLOWED_SCENES) {
-        state.sessionGenerations[scene] += 1;
+        state.sessionRevisions[scene] += 1;
       }
-      const cleared = write(state);
-      if (cleared) {
-        for (const scene of ALLOWED_SCENES) {
-          knownGenerations[scene] = state.sessionGenerations[scene];
-        }
-      }
-      return cleared;
+      return write(state)
+        ? { ok: true, revisions: { ...state.sessionRevisions } }
+        : failure('unavailable');
     }
 
     return {

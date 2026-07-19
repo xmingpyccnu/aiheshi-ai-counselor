@@ -6,7 +6,7 @@ class ChatApp {
     const localState = this.localStore.load();
     this.profile = localState.profile;
     this.sessions = [localState.sessions[0], localState.sessions[1], [], localState.sessions[3]];
-    this.sessionGenerations = localState.sessionGenerations;
+    this.sessionRevisions = localState.sessionRevisions;
     this.typingEl = null;
     this.lastFocusedElement = null;
     this.isProcessing = false;
@@ -16,6 +16,7 @@ class ChatApp {
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
     this.roundNetworkMessage = '';
+    this.lastPersistenceResult = null;
     this.init();
   }
 
@@ -204,14 +205,21 @@ class ChatApp {
       createdAt: Date.now(),
     };
 
+    let normalizationChanged = false;
     if (options.save !== false) {
+      const unnormalized = [...this.sessions[targetScene], message];
       this.sessions[targetScene].push(message);
       this.sessions[targetScene] = this.localStore.normalizeSession(this.sessions[targetScene]);
-      this.notePersistenceResult(this.persistCurrentSession(targetScene));
+      normalizationChanged = JSON.stringify(unnormalized) !== JSON.stringify(this.sessions[targetScene]);
+      const persistenceResult = this.persistCurrentSession(targetScene);
+      this.notePersistenceResult(persistenceResult);
       message = this.sessions[targetScene].find(candidate => candidate.id === message.id) || message;
     }
 
-    if (targetScene === this.currentScene) {
+    const persistenceConflict = this.getLastPersistenceResult()?.reason === 'conflict';
+    if (targetScene === this.currentScene && normalizationChanged && !persistenceConflict) {
+      this.renderCurrentSession();
+    } else if (targetScene === this.currentScene && !persistenceConflict) {
       const bubble = document.createElement('div');
       bubble.className = 'bubble user';
       bubble.textContent = message.text;
@@ -241,14 +249,21 @@ class ChatApp {
       followupDepth: options.followupDepth || 0,
     };
 
+    let normalizationChanged = false;
     if (options.save !== false) {
+      const unnormalized = [...this.sessions[targetScene], message];
       this.sessions[targetScene].push(message);
       this.sessions[targetScene] = this.localStore.normalizeSession(this.sessions[targetScene]);
-      this.notePersistenceResult(this.persistCurrentSession(targetScene));
+      normalizationChanged = JSON.stringify(unnormalized) !== JSON.stringify(this.sessions[targetScene]);
+      const persistenceResult = this.persistCurrentSession(targetScene);
+      this.notePersistenceResult(persistenceResult);
       message = this.sessions[targetScene].find(candidate => candidate.id === message.id) || message;
     }
 
-    if (targetScene === this.currentScene) {
+    const persistenceConflict = this.getLastPersistenceResult()?.reason === 'conflict';
+    if (targetScene === this.currentScene && normalizationChanged && !persistenceConflict) {
+      this.renderCurrentSession();
+    } else if (targetScene === this.currentScene && !persistenceConflict) {
       const stack = document.createElement('div');
       stack.className = 'stack left';
       for (const part of message.parts) {
@@ -314,7 +329,11 @@ class ChatApp {
     yes.addEventListener('click', () => {
       message.feedbackStatus = 'resolved';
       this.syncFeedbackStatus(targetScene, message);
-      if (!this.persistCurrentSession(targetScene)) this.toast('对话未能保存');
+      const result = this.handleStandalonePersistenceResult(
+        this.persistCurrentSession(targetScene),
+        targetScene
+      );
+      if (result.reason === 'conflict') return;
       this.replaceFeedbackState(actions, '已标记为解决');
     });
     const no = document.createElement('button');
@@ -325,7 +344,11 @@ class ChatApp {
       this.syncFeedbackStatus(targetScene, message);
       this.replaceFeedbackState(actions, message.followupDepth >= 1 ? '转入人工协助' : '正在补充回答…');
       if (message.followupDepth >= 1) {
-        if (!this.persistCurrentSession(targetScene)) this.toast('对话未能保存');
+        const result = this.handleStandalonePersistenceResult(
+          this.persistCurrentSession(targetScene),
+          targetScene
+        );
+        if (result.reason === 'conflict') return;
         this.showHumanHandoff(message);
       } else {
         this.requestSecondAnswer(message, targetScene);
@@ -351,15 +374,23 @@ class ChatApp {
   requestSecondAnswer(message, requestScene = this.currentScene) {
     if (this.isProcessing) return;
     const prompt = '这个回答没有解决我的问题。请回到我原来的问题，补充明确的制度依据、适用条件、具体步骤和可行的替代方案；不确定的信息请直接说明。';
-    const requestGeneration = this.getSceneGeneration(requestScene);
     this.beginProcessing();
     this.notePersistenceResult(this.persistCurrentSession(requestScene));
+    if (this.getLastPersistenceResult()?.reason === 'conflict') {
+      this.cancelRoundForConflict();
+      return;
+    }
     this.addUserMessage(prompt, { scene: requestScene });
+    if (this.getLastPersistenceResult()?.reason === 'conflict') {
+      this.cancelRoundForConflict();
+      return;
+    }
+    const requestRevision = this.getSceneRevision(requestScene);
     if (requestScene === this.currentScene) this.showTyping();
     this.fetchAIReply(prompt, {
       followupDepth: (message.followupDepth || 0) + 1,
       scene: requestScene,
-      generation: requestGeneration,
+      revision: requestRevision,
     });
   }
 
@@ -413,10 +444,14 @@ class ChatApp {
     const text = this.msgInput.value.trim();
     if (!text) return;
     const requestScene = this.currentScene;
-    const requestGeneration = this.getSceneGeneration(requestScene);
     this.lastSendTime = now;
     this.beginProcessing();
     this.addUserMessage(text, { scene: requestScene });
+    if (this.getLastPersistenceResult()?.reason === 'conflict') {
+      this.cancelRoundForConflict();
+      return;
+    }
+    const requestRevision = this.getSceneRevision(requestScene);
     this.msgInput.value = '';
     this.updateComposer();
 
@@ -429,7 +464,7 @@ class ChatApp {
     }
 
     this.showTyping();
-    this.fetchAIReply(text, { scene: requestScene, generation: requestGeneration });
+    this.fetchAIReply(text, { scene: requestScene, revision: requestRevision });
   }
 
   beginProcessing() {
@@ -437,19 +472,29 @@ class ChatApp {
     this.roundSaveFailed = false;
     this.roundNetworkFailed = false;
     this.roundNetworkMessage = '';
+    this.lastPersistenceResult = null;
     this.sendBtn.disabled = true;
     this.msgInput.disabled = true;
   }
 
   async fetchAIReply(text, options = {}) {
     const requestScene = Number.isInteger(options.scene) ? options.scene : this.currentScene;
-    const requestGeneration = Number.isSafeInteger(options.generation)
-      ? options.generation
-      : this.getSceneGeneration(requestScene);
+    const requestRevision = Number.isSafeInteger(options.revision)
+      ? options.revision
+      : this.getSceneRevision(requestScene);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 75000);
     try {
+      const beforeNormalization = JSON.stringify(this.sessions[requestScene]);
       this.sessions[requestScene] = this.localStore.normalizeSession(this.sessions[requestScene]);
+      if (
+        requestScene === this.currentScene
+        && beforeNormalization !== JSON.stringify(this.sessions[requestScene])
+      ) {
+        this.renderCurrentSession();
+        this.typingEl = null;
+        if (this.isProcessing) this.showTyping();
+      }
       const history = this.sessions[requestScene]
         .filter(message => message.who === 'user' || message.who === 'ai')
         .slice(-20)
@@ -473,7 +518,7 @@ class ChatApp {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.error) throw new Error(data.error || `服务器错误:${response.status}`);
-      if (!this.isRequestGenerationCurrent(requestScene, requestGeneration)) {
+      if (!this.isRequestRevisionCurrent(requestScene, requestRevision)) {
         this.removeTyping();
         return;
       }
@@ -483,10 +528,11 @@ class ChatApp {
         { parts: [{ type: 'text', text: data.reply }] },
         { followupDepth: options.followupDepth || 0, scene: requestScene }
       );
+      this.resolveReplyPersistenceConflict(requestScene);
     } catch (error) {
       console.error('获取AI回复失败:', error.name);
       this.removeTyping();
-      if (!this.isRequestGenerationCurrent(requestScene, requestGeneration)) return;
+      if (!this.isRequestRevisionCurrent(requestScene, requestRevision)) return;
       this.roundNetworkFailed = true;
       this.roundNetworkMessage = error.name === 'AbortError'
         ? '获取回复失败（回答超时），请稍后重试'
@@ -495,6 +541,7 @@ class ChatApp {
         feedbackEligible: false,
         scene: requestScene,
       });
+      this.resolveReplyPersistenceConflict(requestScene);
     } finally {
       clearTimeout(timeout);
       this.finishProcessingRound();
@@ -524,7 +571,55 @@ class ChatApp {
   }
 
   notePersistenceResult(result) {
-    this.roundSaveFailed = result === false;
+    const persistenceResult = this.normalizePersistenceResult(result);
+    this.lastPersistenceResult = persistenceResult;
+    this.roundSaveFailed = persistenceResult.ok === false && persistenceResult.reason !== 'conflict';
+  }
+
+  normalizePersistenceResult(result) {
+    if (result && typeof result === 'object' && typeof result.ok === 'boolean') return result;
+    if (result === true) return { ok: true, revision: null };
+    return { ok: false, reason: 'unavailable' };
+  }
+
+  getLastPersistenceResult() {
+    return this.normalizePersistenceResult(this.lastPersistenceResult);
+  }
+
+  cancelRoundForConflict() {
+    const conflict = this.getLastPersistenceResult();
+    this.applyLocalState(conflict.state || this.localStore.load());
+    if (this.currentScene !== 2) this.renderCurrentSession();
+    this.roundSaveFailed = false;
+    this.roundNetworkFailed = false;
+    this.roundNetworkMessage = '';
+    this.toast('对话已在其他页面更新，请重试');
+    this.resetProcessingState();
+  }
+
+  resolveReplyPersistenceConflict(requestScene) {
+    const conflict = this.getLastPersistenceResult();
+    if (conflict.reason !== 'conflict') return false;
+    this.applyLocalState(conflict.state || this.localStore.load());
+    if (requestScene === this.currentScene && requestScene !== 2) this.renderCurrentSession();
+    this.roundSaveFailed = false;
+    this.roundNetworkFailed = false;
+    this.roundNetworkMessage = '';
+    this.toast('对话已在其他页面更新，请重试');
+    return true;
+  }
+
+  handleStandalonePersistenceResult(result, targetScene) {
+    const persistenceResult = this.normalizePersistenceResult(result);
+    if (persistenceResult.ok) return persistenceResult;
+    if (persistenceResult.reason === 'conflict') {
+      this.applyLocalState(persistenceResult.state || this.localStore.load());
+      if (targetScene === this.currentScene && targetScene !== 2) this.renderCurrentSession();
+      this.toast('对话已在其他页面更新，请重试');
+      return persistenceResult;
+    }
+    this.toast('对话未能保存');
+    return persistenceResult;
   }
 
   finishProcessingRound() {
@@ -641,32 +736,49 @@ class ChatApp {
   }
 
   persistCurrentSession(targetScene = this.currentScene) {
-    if (targetScene === 2) return true;
+    if (targetScene === 2) {
+      const result = { ok: true, revision: null };
+      this.lastPersistenceResult = result;
+      return true;
+    }
     const normalized = this.localStore.normalizeSession(this.sessions[targetScene]);
     const saved = this.localStore.saveSession(
       targetScene,
       normalized,
-      this.getSceneGeneration(targetScene)
+      this.getSceneRevision(targetScene)
     );
-    if (!saved) return false;
+    const result = this.normalizePersistenceResult(saved);
+    this.lastPersistenceResult = result;
+    if (!result.ok) return saved;
 
     this.sessions[targetScene] = normalized;
-    return true;
+    if (Number.isSafeInteger(result.revision)) {
+      this.sessionRevisions[targetScene] = result.revision;
+    }
+    return saved;
   }
 
-  getSceneGeneration(sceneIndex) {
+  getSceneRevision(sceneIndex) {
     if (sceneIndex === 2) return null;
-    const generation = this.sessionGenerations?.[sceneIndex];
-    return Number.isSafeInteger(generation) && generation >= 0 ? generation : null;
+    const revision = this.sessionRevisions?.[sceneIndex];
+    return Number.isSafeInteger(revision) && revision >= 0 ? revision : null;
   }
 
-  isRequestGenerationCurrent(sceneIndex, requestGeneration) {
+  isRequestRevisionCurrent(sceneIndex, requestRevision) {
     if (sceneIndex === 2) return true;
-    return requestGeneration === this.getSceneGeneration(sceneIndex);
+    return requestRevision === this.getSceneRevision(sceneIndex);
+  }
+
+  applyLocalState(localState) {
+    this.profile = localState.profile;
+    this.sessions[0] = localState.sessions[0];
+    this.sessions[1] = localState.sessions[1];
+    this.sessions[3] = localState.sessions[3];
+    this.sessionRevisions = localState.sessionRevisions;
   }
 
   handleStorageEvent(event) {
-    if (event.key !== null && event.key !== this.localStore.storageKey) return;
+    if (event.key !== this.localStore.storageKey) return;
 
     const previousProfile = JSON.stringify(this.profile);
     const previousSessions = {
@@ -674,18 +786,14 @@ class ChatApp {
       1: JSON.stringify(this.sessions[1]),
       3: JSON.stringify(this.sessions[3]),
     };
-    const previousGenerations = { ...this.sessionGenerations };
+    const previousRevisions = { ...this.sessionRevisions };
     const localState = this.localStore.load();
     const changedScenes = [0, 1, 3].filter(sceneIndex => (
       previousSessions[sceneIndex] !== JSON.stringify(localState.sessions[sceneIndex])
-      || previousGenerations[sceneIndex] !== localState.sessionGenerations[sceneIndex]
+      || previousRevisions[sceneIndex] !== localState.sessionRevisions[sceneIndex]
     ));
 
-    this.profile = localState.profile;
-    this.sessions[0] = localState.sessions[0];
-    this.sessions[1] = localState.sessions[1];
-    this.sessions[3] = localState.sessions[3];
-    this.sessionGenerations = localState.sessionGenerations;
+    this.applyLocalState(localState);
 
     if (this.currentScene !== 2 && changedScenes.includes(this.currentScene)) {
       this.renderCurrentSession();
@@ -763,14 +871,24 @@ class ChatApp {
       return;
     }
     if (!window.confirm('只删除当前设备上的该模块历史，是否继续？')) return;
-    if (!this.localStore.clearSession(sceneIndex)) {
+    const result = this.normalizePersistenceResult(
+      this.localStore.clearSession(sceneIndex, this.getSceneRevision(sceneIndex))
+    );
+    if (!result.ok) {
+      if (result.reason === 'conflict') {
+        this.applyLocalState(result.state || this.localStore.load());
+        if (this.currentScene === sceneIndex) this.renderCurrentSession();
+        this.updateProfileStats();
+        this.renderHistoryList();
+        this.toast('对话已在其他页面更新，请重试');
+        return;
+      }
       this.toast('本地历史删除失败');
       return;
     }
 
-    const localState = this.localStore.load();
-    this.sessions[sceneIndex] = localState.sessions[sceneIndex];
-    this.sessionGenerations = localState.sessionGenerations;
+    this.sessions[sceneIndex] = [];
+    this.sessionRevisions[sceneIndex] = result.revision;
     if (this.currentScene === sceneIndex) this.renderCurrentSession();
     this.updateProfileStats();
     this.renderHistoryList();
@@ -785,16 +903,26 @@ class ChatApp {
       return;
     }
     if (!window.confirm('将清除当前设备上的校园、成长和事务历史，是否继续？')) return;
-    if (!this.localStore.clearAllSessions()) {
+    const result = this.normalizePersistenceResult(
+      this.localStore.clearAllSessions({ ...this.sessionRevisions })
+    );
+    if (!result.ok) {
+      if (result.reason === 'conflict') {
+        this.applyLocalState(result.state || this.localStore.load());
+        if (this.currentScene !== 2) this.renderCurrentSession();
+        this.updateProfileStats();
+        this.renderHistoryList();
+        this.toast('对话已在其他页面更新，请重试');
+        return;
+      }
       this.toast('本地历史清空失败');
       return;
     }
 
-    const localState = this.localStore.load();
-    this.sessions[0] = localState.sessions[0];
-    this.sessions[1] = localState.sessions[1];
-    this.sessions[3] = localState.sessions[3];
-    this.sessionGenerations = localState.sessionGenerations;
+    this.sessions[0] = [];
+    this.sessions[1] = [];
+    this.sessions[3] = [];
+    this.sessionRevisions = result.revisions;
     if (this.currentScene !== 2) this.renderCurrentSession();
     this.updateProfileStats();
     this.renderHistoryList();
