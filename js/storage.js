@@ -60,7 +60,7 @@
       if (body) cleaned.body = body;
     }
 
-    if (typeof part.coral === 'boolean') cleaned.coral = part.coral;
+    if (Object.hasOwn(part, 'coral')) cleaned.coral = Boolean(part.coral);
     return cleaned;
   }
 

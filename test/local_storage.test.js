@@ -163,6 +163,17 @@ test('消息清洗限制字段、长度和AI部件类型', () => {
   assert.equal(saved[1].followupDepth, 2);
 });
 
+test('AI部件的coral值转换为布尔值', () => {
+  const storage = new MemoryStorage();
+  const store = createLocalStateStore(storage);
+
+  assert.equal(store.saveSession(0, [{
+    who: 'ai',
+    parts: [{ type: 'text', text: '高风险提示', coral: 1 }],
+  }]), true);
+  assert.equal(readSaved(storage).sessions['0'][0].parts[0].coral, true);
+});
+
 test('clearSession和clearAllSessions保留个人资料且不接受场景2', () => {
   const storage = new MemoryStorage();
   const store = createLocalStateStore(storage);
