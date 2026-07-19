@@ -1,0 +1,22 @@
+{
+  "name": "爱·合师 AI辅导员",
+  "short_name": "爱·合师",
+  "description": "合肥师范学院AI辅导员应用",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#147171",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "assets/A_cute_2D_cartoon_style_Chines_2026-07-10T15-22-43.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/A_cute_2D_cartoon_style_Chines_2026-07-10T15-22-43.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

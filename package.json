@@ -1,0 +1,21 @@
+{
+  "name": "ai-counselor-app",
+  "version": "1.0.0",
+  "description": "爱合师AI辅导员应用",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --env-file-if-exists=.env server.js"
+  },
+  "keywords": [
+    "ai",
+    "counselor",
+    "education"
+  ],
+  "author": "爱合师团队",
+  "license": "MIT",
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "ws": "^8.21.1"
+  }
+}
