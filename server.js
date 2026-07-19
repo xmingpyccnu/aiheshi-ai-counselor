@@ -260,25 +260,32 @@ function createAppServer({ agentLoop: runAgent = agentLoop } = {}) {
   });
 }
 
+function resolveListenHost(value = process.env.HOST) {
+  const host = typeof value === 'string' ? value.trim() : '';
+  return host || '127.0.0.1';
+}
+
 if (require.main === module) {
   const configuredPort = Number.parseInt(process.env.PORT || '', 10);
   const port = Number.isInteger(configuredPort) && configuredPort > 0
     ? configuredPort
     : DEFAULT_PORT;
+  const host = resolveListenHost();
   const server = createAppServer();
   server.on('error', error => {
     console.error('[Server] 启动失败:', error.message);
     process.exitCode = 1;
   });
-  server.listen(port, () => {
-    console.log(`爱合师AI辅导员Agent运行在:http://localhost:${port}`);
-    console.log(`Agent API:POST http://localhost:${port}/api/chat`);
+  server.listen(port, host, () => {
+    console.log(`爱合师AI辅导员Agent运行在:http://${host}:${port}`);
+    console.log(`Agent API:POST http://${host}:${port}/api/chat`);
     console.log('按Ctrl+C停止服务器');
   });
 }
 
 module.exports = {
   createAppServer,
+  resolveListenHost,
   resolvePublicFile,
   validateChatPayload,
 };

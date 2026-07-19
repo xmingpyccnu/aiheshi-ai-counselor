@@ -1,7 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createAppServer } = require('../server');
+const { createAppServer, resolveListenHost } = require('../server');
+
+test('生产服务默认仅监听本机并允许显式覆盖HOST', () => {
+  assert.equal(resolveListenHost(undefined), '127.0.0.1');
+  assert.equal(resolveListenHost(''), '127.0.0.1');
+  assert.equal(resolveListenHost(' 0.0.0.0 '), '0.0.0.0');
+});
 
 async function withServer(run, runAgent = async () => '测试回复') {
   const server = createAppServer({ agentLoop: runAgent });
