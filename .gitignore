@@ -5,3 +5,4 @@ node_modules/
 *.backup*
 npm-debug.log*
 .superpowers/
+.worktrees/
