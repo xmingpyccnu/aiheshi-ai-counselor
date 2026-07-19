@@ -801,35 +801,6 @@ body{
 .tab.active{ color:var(--text-primary); font-weight: 600; }
 .tab.active .t-ico{ background:var(--app-bg); }
 
-/* ===== FAB按钮 ===== */
-.fab{ 
-  position:absolute; 
-  right:16px; 
-  bottom: calc(140px + var(--safe-area-bottom));
-  z-index:40; 
-  background:var(--text-primary); 
-  color:var(--canvas); 
-  border:none; 
-  border-radius:var(--app-radius-sm);
-  padding:12px 20px; 
-  font-size:12px; 
-  font-weight:500; 
-  cursor:pointer; 
-  font-family:inherit;
-  display:flex; 
-  align-items:center; 
-  gap:8px;
-  transition: all var(--transition-fast);
-  text-transform: uppercase; 
-  letter-spacing: 0.05em;
-  min-height: 48px; /* 触摸友好 */
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-}
-.fab:active { 
-  background: #333;
-  transform: scale(0.98);
-}
-
 /* ===== Toast ===== */
 .toast{ 
   position:absolute; 
@@ -958,7 +929,7 @@ body{
 /* ===== 触摸优化 ===== */
 @media (hover: none) and (pointer: coarse) {
   /* 触摸设备 */
-  .pill, .safety-bar .s-btn, .ai-form .submit, .crisis-card .cr-btn, .fab, .tab {
+  .pill, .safety-bar .s-btn, .ai-form .submit, .crisis-card .cr-btn, .tab {
     -webkit-tap-highlight-color: transparent;
   }
   

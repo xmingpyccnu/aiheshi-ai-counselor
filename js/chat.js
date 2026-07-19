@@ -42,7 +42,6 @@ class ChatApp {
     this.sendBtn = document.getElementById('sendBtn');
     this.navScene = document.getElementById('navScene');
     this.safetyBar = document.getElementById('safetyBar');
-    this.fabBtn = document.getElementById('fabBtn');
     this.crisisModal = document.getElementById('crisisModal');
     this.handoffModal = document.getElementById('handoffModal');
     this.handoffSummary = document.getElementById('handoffSummary');
@@ -84,7 +83,6 @@ class ChatApp {
       });
     });
 
-    this.fabBtn.addEventListener('click', () => this.showCrisisModal());
     this.safetyBar.querySelector('.s-btn').addEventListener('click', () => this.showCrisisModal());
     document.getElementById('crisisClose').addEventListener('click', () => this.closeCrisis());
     this.crisisModal.addEventListener('click', event => {
@@ -154,7 +152,6 @@ class ChatApp {
     const scene = this.getCurrentSceneConfig();
     this.navScene.textContent = scene.name;
     this.safetyBar.classList.toggle('hidden', this.currentScene !== 2);
-    this.fabBtn.classList.toggle('hidden', this.currentScene !== 2);
     this.chatScreen.innerHTML = '';
     this.addWelcomeMessage(scene);
     this.addQuickButtons(scene.tabs);

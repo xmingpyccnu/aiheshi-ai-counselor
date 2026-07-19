@@ -53,10 +53,13 @@ test('危机表达会生成明确支持信息', () => {
 
 test('紧急求助界面提供可拨打且有来源的资源', () => {
   const html = read('index.html');
+  const source = read('js/chat.js');
   assert.match(html, /href="tel:12356"/);
   assert.match(html, /href="tel:055163666903"/);
   assert.match(html, /nhc\.gov\.cn/);
   assert.match(html, /hfnu\.edu\.cn/);
+  assert.doesNotMatch(html, /id="fabBtn"/);
+  assert.doesNotMatch(source, /fabBtn/);
 });
 
 test('危机识别覆盖中英文高风险表达且避免普通负面评价', () => {

@@ -145,7 +145,6 @@ function installRealChatView(app, ChatApp) {
   app.messageSequence = 0;
   app.navScene = new FakeElement('div');
   app.safetyBar = new FakeElement('div');
-  app.fabBtn = new FakeElement('button');
   app.chatScreen = new FakeElement('main');
   app.renderCurrentSession = ChatApp.prototype.renderCurrentSession.bind(app);
   app.scrollBottom = () => {};
@@ -775,7 +774,6 @@ test('用户消息revision冲突后真实DOM重绘外部历史且scene2仍可恢
   app.messageSequence = 0;
   app.navScene = new FakeElement('div');
   app.safetyBar = new FakeElement('div');
-  app.fabBtn = new FakeElement('button');
   app.chatScreen = new FakeElement('main');
   app.renderCurrentSession = ChatApp.prototype.renderCurrentSession.bind(app);
   app.scrollBottom = () => {};
