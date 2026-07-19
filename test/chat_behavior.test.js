@@ -123,6 +123,7 @@ function createFakeDocument() {
   return {
     activeElement: null,
     createElement: tagName => new FakeElement(tagName),
+    querySelectorAll: () => [],
   };
 }
 
@@ -999,6 +1000,77 @@ test('处理中的外部profile变化延迟到finally重绘且不重复消息', 
   assert.equal((finalText.match(/处理中成长问题/g) || []).length, 1);
   assert.equal((finalText.match(/本轮成长回复/g) || []).length, 1);
 });
+
+for (const awayView of ['home', 'profile']) {
+  test(`处理中离开成长页到${awayView}后返回时才消费profile重绘`, async () => {
+    const delayed = deferredResponse();
+    const fakeDocument = createFakeDocument();
+    const requestBodies = [];
+    const getCareerTrack = grade => grade === 'junior'
+      ? { version: '大三版', welcome: '大三成长欢迎', tabs: ['大三实习入口'], topics: [] }
+      : { version: '大一版', welcome: '大一成长欢迎', tabs: ['大一适应入口'], topics: [] };
+    const { ChatApp } = loadChatApp((_url, options) => {
+      requestBodies.push(JSON.parse(options.body));
+      if (requestBodies.length === 1) return delayed.promise;
+      return Promise.resolve({ ok: true, json: async () => ({ reply: '第二轮成长回复' }) });
+    }, fakeDocument, { getCareerTrack });
+    const storageData = new Map();
+    const storage = {
+      getItem(key) { return storageData.has(key) ? storageData.get(key) : null; },
+      setItem(key, value) { storageData.set(key, String(value)); },
+    };
+    const firstStore = createLocalStateStore(storage);
+    const secondStore = createLocalStateStore(storage);
+    firstStore.load();
+    firstStore.saveProfile({ grade: 'freshman', major: '数学', goal: '适应大学' });
+    const initial = firstStore.load();
+    secondStore.load();
+    const app = createApp(ChatApp, 1);
+    app.localStore = {
+      ...firstStore,
+      // Keep this scenario focused on the deferred-profile redraw path. The
+      // storage layer still performs its real sanitization and CAS on save.
+      normalizeSession: messages => messages.slice(-40),
+    };
+    app.profile = initial.profile;
+    app.sessions = [initial.sessions[0], initial.sessions[1], [], initial.sessions[3]];
+    app.sessionRevisions = { ...initial.sessionRevisions };
+    app.homeScreen = new FakeElement('section');
+    app.chatView = new FakeElement('section');
+    app.profileView = new FakeElement('section');
+    installRealChatView(app, ChatApp);
+    app.renderCurrentSession();
+    app.msgInput.value = '离页前的成长问题';
+    let requestTask;
+    const fetchAIReply = ChatApp.prototype.fetchAIReply.bind(app);
+    app.fetchAIReply = (...args) => { requestTask = fetchAIReply(...args); };
+
+    ChatApp.prototype.handleSend.call(app);
+    secondStore.saveProfile({ grade: 'junior', major: '数学', goal: '准备实习' });
+    ChatApp.prototype.handleStorageEvent.call(app, { key: 'aihesh.local.v2' });
+    ChatApp.prototype.navigateTo.call(app, awayView);
+    delayed.resolve({ ok: true, json: async () => ({ reply: '离页前的成长回复' }) });
+    await requestTask;
+
+    assert.equal(app.pendingProfileRender, true);
+    assert.match(app.chatScreen.textContent, /大一成长欢迎/);
+    ChatApp.prototype.navigateTo.call(app, 'chat');
+
+    const returnedText = app.chatScreen.textContent;
+    assert.equal(app.pendingProfileRender, false);
+    assert.match(returnedText, /大三成长欢迎/);
+    assert.match(returnedText, /大三版/);
+    assert.match(returnedText, /大三实习入口/);
+    assert.doesNotMatch(returnedText, /大一适应入口/);
+    assert.equal((returnedText.match(/离页前的成长问题/g) || []).length, 1);
+    assert.equal((returnedText.match(/离页前的成长回复/g) || []).length, 1);
+
+    app.msgInput.value = '返回后的成长问题';
+    ChatApp.prototype.handleSend.call(app);
+    await requestTask;
+    assert.equal(requestBodies[1].profile.grade, 'junior');
+  });
+}
 
 test('请求前裁掉第41条历史时重绘当前DOM以匹配40条内存', async () => {
   const { ChatApp } = loadChatApp();

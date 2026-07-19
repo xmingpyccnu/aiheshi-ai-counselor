@@ -118,6 +118,7 @@ class ChatApp {
       this.renderHistoryList();
     }
     if (view === 'chat') {
+      this.flushPendingProfileRender();
       this.scrollBottom();
       requestAnimationFrame(() => this.msgInput.focus());
     }
@@ -153,6 +154,7 @@ class ChatApp {
       }
     }
     this.scrollBottom();
+    if (this.currentScene === 1) this.pendingProfileRender = false;
   }
 
   addWelcomeMessage(scene) {
@@ -867,10 +869,8 @@ class ChatApp {
 
   flushPendingProfileRender() {
     if (!this.pendingProfileRender) return;
-    this.pendingProfileRender = false;
-    if (this.currentScene === 1 && this.currentView === 'chat') {
-      this.renderCurrentSession();
-    }
+    if (this.currentScene !== 1 || this.currentView !== 'chat') return;
+    this.renderCurrentSession();
   }
 
   renderHistoryList() {
