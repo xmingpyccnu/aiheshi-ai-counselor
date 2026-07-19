@@ -216,7 +216,8 @@ class ChatApp {
       message = this.sessions[targetScene].find(candidate => candidate.id === message.id) || message;
     }
 
-    const persistenceConflict = this.getLastPersistenceResult()?.reason === 'conflict';
+    const persistenceConflict = options.save !== false
+      && this.getLastPersistenceResult()?.reason === 'conflict';
     if (targetScene === this.currentScene && normalizationChanged && !persistenceConflict) {
       this.renderCurrentSession();
     } else if (targetScene === this.currentScene && !persistenceConflict) {
@@ -260,7 +261,8 @@ class ChatApp {
       message = this.sessions[targetScene].find(candidate => candidate.id === message.id) || message;
     }
 
-    const persistenceConflict = this.getLastPersistenceResult()?.reason === 'conflict';
+    const persistenceConflict = options.save !== false
+      && this.getLastPersistenceResult()?.reason === 'conflict';
     if (targetScene === this.currentScene && normalizationChanged && !persistenceConflict) {
       this.renderCurrentSession();
     } else if (targetScene === this.currentScene && !persistenceConflict) {

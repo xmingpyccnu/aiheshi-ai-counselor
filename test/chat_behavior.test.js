@@ -9,7 +9,7 @@ const { createLocalStateStore } = require('../js/storage');
 function loadChatApp(fetchImpl = async () => ({
   ok: true,
   json: async () => ({ reply: '回答' }),
-})) {
+}), documentImpl) {
   const source = fs.readFileSync(path.join(__dirname, '..', 'js/chat.js'), 'utf8');
   let confirmCalls = 0;
   const sandbox = {
@@ -35,10 +35,93 @@ function loadChatApp(fetchImpl = async () => ({
       },
     },
   };
+  if (documentImpl) sandbox.document = documentImpl;
   vm.runInNewContext(`${source}\nthis.ChatApp = ChatApp;`, sandbox);
   return {
     ChatApp: sandbox.ChatApp,
     getConfirmCalls: () => confirmCalls,
+  };
+}
+
+class FakeElement {
+  constructor(tagName = 'div') {
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.dataset = {};
+    this.attributes = {};
+    this.className = '';
+    this._textContent = '';
+    this.classList = {
+      add: (...names) => this.updateClasses(names, true),
+      remove: (...names) => this.updateClasses(names, false),
+      toggle: (name, force) => {
+        const hasClass = this.className.split(/\s+/).includes(name);
+        const enabled = force === undefined ? !hasClass : Boolean(force);
+        this.updateClasses([name], enabled);
+        return enabled;
+      },
+      contains: name => this.className.split(/\s+/).includes(name),
+    };
+  }
+
+  updateClasses(names, enabled) {
+    const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+    names.forEach(name => enabled ? classes.add(name) : classes.delete(name));
+    this.className = [...classes].join(' ');
+  }
+
+  appendChild(child) {
+    this.children.push(child);
+    child.parentElement = this;
+    return child;
+  }
+
+  append(...children) {
+    children.forEach(child => this.appendChild(child));
+  }
+
+  replaceChildren(...children) {
+    this.children = [];
+    this._textContent = '';
+    this.append(...children);
+  }
+
+  addEventListener() {}
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+  }
+
+  focus() {}
+
+  remove() {
+    if (!this.parentElement) return;
+    this.parentElement.children = this.parentElement.children.filter(child => child !== this);
+  }
+
+  set textContent(value) {
+    this._textContent = String(value ?? '');
+    this.children = [];
+  }
+
+  get textContent() {
+    return this._textContent + this.children.map(child => child.textContent || '').join('');
+  }
+
+  set innerHTML(value) {
+    this._textContent = String(value || '');
+    this.children = [];
+  }
+
+  get innerHTML() {
+    return this._textContent;
+  }
+}
+
+function createFakeDocument() {
+  return {
+    activeElement: null,
+    createElement: tagName => new FakeElement(tagName),
   };
 }
 
@@ -564,6 +647,65 @@ test('用户消息CAS冲突时同步外部状态并取消网络请求', () => {
   assert.equal(app.msgInput.value, '不要覆盖外部内容');
   assert.equal(app.sessions[0][0].text, '其他页面内容');
   assert.deepEqual(app.toasts, ['对话已在其他页面更新，请重试']);
+});
+
+test('用户消息CAS冲突后真实DOM重绘外部历史且scene2仍可恢复', () => {
+  const fakeDocument = createFakeDocument();
+  const { ChatApp } = loadChatApp(undefined, fakeDocument);
+  const storageData = new Map();
+  const storage = {
+    getItem(key) { return storageData.has(key) ? storageData.get(key) : null; },
+    setItem(key, value) { storageData.set(key, String(value)); },
+  };
+  const staleStore = createLocalStateStore(storage);
+  const otherStore = createLocalStateStore(storage);
+  const staleState = staleStore.load();
+  const otherState = otherStore.load();
+  const externalMessages = [
+    { who: 'user', id: 'external-user', text: '外部页面用户消息', createdAt: Date.now() },
+    {
+      who: 'ai',
+      id: 'external-ai',
+      parts: [{ type: 'text', text: '外部页面AI回复' }],
+      createdAt: Date.now(),
+      feedbackEligible: false,
+    },
+  ];
+  const externalSave = otherStore.saveSession(
+    0,
+    externalMessages,
+    otherState.sessionRevisions[0]
+  );
+  assert.equal(externalSave.ok, true);
+
+  const app = createApp(ChatApp, 0);
+  app.localStore = staleStore;
+  app.sessions = [staleState.sessions[0], staleState.sessions[1], [{
+    who: 'user', id: 'private-scene2', text: 'scene2内存消息', createdAt: Date.now(),
+  }], staleState.sessions[3]];
+  app.sessionRevisions = { ...staleState.sessionRevisions };
+  app.messageSequence = 0;
+  app.navScene = new FakeElement('div');
+  app.safetyBar = new FakeElement('div');
+  app.fabBtn = new FakeElement('button');
+  app.chatScreen = new FakeElement('main');
+  app.renderCurrentSession = ChatApp.prototype.renderCurrentSession.bind(app);
+  app.scrollBottom = () => {};
+  let fetchCalls = 0;
+  app.fetchAIReply = () => { fetchCalls += 1; };
+  app.msgInput.value = '冲突页面待写消息';
+
+  ChatApp.prototype.handleSend.call(app);
+
+  const externalDomText = app.chatScreen.textContent;
+  assert.equal(fetchCalls, 0);
+  assert.match(externalDomText, /外部页面用户消息/);
+  assert.match(externalDomText, /外部页面AI回复/);
+  assert.doesNotMatch(externalDomText, /冲突页面待写消息/);
+  assert.equal(app.sessions[0].some(message => message.text === '冲突页面待写消息'), false);
+
+  ChatApp.prototype.switchScene.call(app, 2);
+  assert.match(app.chatScreen.textContent, /scene2内存消息/);
 });
 
 test('storage事件尚未送达时AI保存CAS冲突也会回读外部会话', async () => {
